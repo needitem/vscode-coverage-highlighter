@@ -1,16 +1,22 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
-import { parseCoverageXml, findMatchingCoverage, CoverageData, FileCoverage } from './coverageParser';
+import { parseCoverageXml, findMatchingCoverage, CoverageData, FileCoverage, normalizePath } from './coverageParser';
 import { CoverageHighlighter } from './highlighter';
+import { LineTracker } from './lineTracker';
 
 let coverageData: CoverageData | undefined;
 let highlighter: CoverageHighlighter;
+let lineTracker: LineTracker;
 let statusBarItem: vscode.StatusBarItem;
+
+// 파일 경로 매핑 캐시 (로컬 경로 -> coverage 파일 경로)
+const filePathMapping: Map<string, string> = new Map();
 
 export function activate(context: vscode.ExtensionContext) {
     console.log('Coverage Highlighter is now active!');
 
     highlighter = new CoverageHighlighter();
+    lineTracker = new LineTracker();
 
     // Create status bar item
     statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
@@ -51,6 +57,30 @@ export function activate(context: vscode.ExtensionContext) {
         })
     );
 
+    // 문서 변경 시 라인 추적 및 하이라이트 업데이트
+    context.subscriptions.push(
+        vscode.workspace.onDidChangeTextDocument(event => {
+            if (!coverageData) {
+                return;
+            }
+
+            const filePath = event.document.uri.fsPath;
+
+            // LineTracker로 라인 변경 추적
+            const changed = lineTracker.handleDocumentChange(event);
+
+            if (changed) {
+                // 변경된 라인 정보로 하이라이트 다시 적용
+                const editor = vscode.window.visibleTextEditors.find(
+                    e => e.document.uri.fsPath === filePath
+                );
+                if (editor) {
+                    applyHighlightsToEditorWithTracker(editor);
+                }
+            }
+        })
+    );
+
     // Re-apply highlights when configuration changes
     context.subscriptions.push(
         vscode.workspace.onDidChangeConfiguration(e => {
@@ -66,6 +96,7 @@ export function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push({
         dispose: () => {
             highlighter.dispose();
+            lineTracker.clear();
         }
     });
 }
@@ -102,6 +133,10 @@ async function loadCoverage() {
         }, async (progress) => {
             progress.report({ increment: 0, message: "Parsing XML..." });
 
+            // 이전 데이터 초기화
+            lineTracker.clear();
+            filePathMapping.clear();
+
             coverageData = parseCoverageXml(xmlPath);
 
             progress.report({ increment: 50, message: "Applying highlights..." });
@@ -127,6 +162,8 @@ async function loadCoverage() {
 
 function clearCoverage() {
     coverageData = undefined;
+    lineTracker.clear();
+    filePathMapping.clear();
     highlighter.clearAllHighlights();
     statusBarItem.hide();
     vscode.window.showInformationMessage('Coverage highlights cleared');
@@ -296,9 +333,35 @@ function applyHighlightsToEditor(editor: vscode.TextEditor) {
     const coverage = findMatchingCoverage(filePath, coverageData.files);
 
     if (coverage) {
+        // LineTracker에 등록
+        lineTracker.registerFile(filePath, {
+            coveredLines: coverage.coveredLines,
+            uncoveredLines: coverage.uncoveredLines,
+            partialCoveredLines: coverage.partialCoveredLines
+        });
+
+        // 경로 매핑 저장
+        filePathMapping.set(filePath, coverage.fileName);
+
         highlighter.applyHighlights(editor, coverage);
     } else {
         highlighter.clearHighlights(editor);
+    }
+}
+
+function applyHighlightsToEditorWithTracker(editor: vscode.TextEditor) {
+    const filePath = editor.document.uri.fsPath;
+    const tracked = lineTracker.getTrackedLines(filePath);
+
+    if (tracked) {
+        // 추적된 라인 정보로 하이라이트 적용
+        const coverage: FileCoverage = {
+            fileName: filePathMapping.get(filePath) || filePath,
+            coveredLines: tracked.coveredLines,
+            uncoveredLines: tracked.uncoveredLines,
+            partialCoveredLines: tracked.partialCoveredLines
+        };
+        highlighter.applyHighlights(editor, coverage);
     }
 }
 
@@ -314,7 +377,7 @@ function updateStatusBar() {
         return;
     }
 
-    statusBarItem.text = `$(coverage) Coverage: ${coverageData.summary.statementCov.toFixed(1)}%`;
+    statusBarItem.text = `$(beaker) Coverage: ${coverageData.summary.statementCov.toFixed(1)}%`;
     statusBarItem.tooltip = `Statement: ${coverageData.summary.statementCov.toFixed(1)}% | Branch: ${coverageData.summary.branchCov.toFixed(1)}%\nClick for details`;
     statusBarItem.show();
 }
@@ -322,5 +385,8 @@ function updateStatusBar() {
 export function deactivate() {
     if (highlighter) {
         highlighter.dispose();
+    }
+    if (lineTracker) {
+        lineTracker.clear();
     }
 }
