@@ -1,0 +1,68 @@
+{
+  "name": "coverage-highlighter",
+  "displayName": "Coverage Highlighter",
+  "description": "Coverage XML 파일을 사용하여 코드 커버리지를 시각화합니다",
+  "version": "1.0.0",
+  "publisher": "your-publisher",
+  "engines": {
+    "vscode": "^1.74.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "coverage-highlighter.loadCoverage",
+        "title": "Coverage: Load Coverage XML"
+      },
+      {
+        "command": "coverage-highlighter.clearCoverage",
+        "title": "Coverage: Clear Highlights"
+      },
+      {
+        "command": "coverage-highlighter.showSummary",
+        "title": "Coverage: Show Summary"
+      }
+    ],
+    "configuration": {
+      "title": "Coverage Highlighter",
+      "properties": {
+        "coverageHighlighter.coveredColor": {
+          "type": "string",
+          "default": "rgba(0, 255, 0, 0.2)",
+          "description": "커버된 코드의 배경색"
+        },
+        "coverageHighlighter.uncoveredColor": {
+          "type": "string",
+          "default": "rgba(255, 0, 0, 0.2)",
+          "description": "커버되지 않은 코드의 배경색"
+        },
+        "coverageHighlighter.partialColor": {
+          "type": "string",
+          "default": "rgba(255, 255, 0, 0.2)",
+          "description": "부분 커버된 코드의 배경색"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run package",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node"
+  },
+  "devDependencies": {
+    "@types/node": "^18.0.0",
+    "@types/vscode": "^1.74.0",
+    "esbuild": "^0.27.1",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "fast-xml-parser": "^4.3.0"
+  }
+}
