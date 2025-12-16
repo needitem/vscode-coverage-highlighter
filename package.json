@@ -2,7 +2,7 @@
   "name": "coverage-highlighter",
   "displayName": "Coverage Highlighter",
   "description": "Coverage XML 파일을 사용하여 코드 커버리지를 시각화합니다",
-  "version": "1.7.0",
+  "version": "1.8.0",
   "publisher": "your-publisher",
   "engines": {
     "vscode": "^1.74.0"
@@ -123,18 +123,23 @@
         "title": "Coverage: 빠른 분류 슬롯 9"
       },
       {
-        "command": "coverage-highlighter.classifyFromTree",
-        "title": "분류하기",
-        "icon": "$(add)"
-      },
-      {
-        "command": "coverage-highlighter.manageShortcuts",
-        "title": "Coverage: 단축키 설정",
-        "icon": "$(keyboard)"
-      },
-      {
         "command": "coverage-highlighter.loadRecentXml",
         "title": "Coverage: 최근 XML 로드"
+      },
+      {
+        "command": "coverage-highlighter.quickClassifyFromTreeDocument",
+        "title": "문서",
+        "icon": "$(file-text)"
+      },
+      {
+        "command": "coverage-highlighter.quickClassifyFromTreeComment",
+        "title": "주석예정",
+        "icon": "$(comment)"
+      },
+      {
+        "command": "coverage-highlighter.quickClassifyFromTreeCover",
+        "title": "태울예정",
+        "icon": "$(flame)"
       }
     ],
     "menus": {
@@ -174,9 +179,19 @@
           "group": "inline"
         },
         {
-          "command": "coverage-highlighter.classifyFromTree",
+          "command": "coverage-highlighter.quickClassifyFromTreeDocument",
           "when": "view == coverageExplorer && viewItem == unclassifiedLine",
-          "group": "inline"
+          "group": "inline@1"
+        },
+        {
+          "command": "coverage-highlighter.quickClassifyFromTreeComment",
+          "when": "view == coverageExplorer && viewItem == unclassifiedLine",
+          "group": "inline@2"
+        },
+        {
+          "command": "coverage-highlighter.quickClassifyFromTreeCover",
+          "when": "view == coverageExplorer && viewItem == unclassifiedLine",
+          "group": "inline@3"
         }
       ]
     },
