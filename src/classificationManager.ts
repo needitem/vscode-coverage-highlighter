@@ -1,6 +1,18 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
-import * as fs from 'fs';
+
+// 경로 매칭을 위한 suffix 추출
+function getPathSuffix(filePath: string, depth: number = 5): string {
+    const normalized = filePath.replace(/\\/g, '/').toLowerCase();
+    const parts = normalized.split('/').filter(p => p.length > 0);
+    return parts.slice(-depth).join('/');
+}
+
+function pathsMatch(path1: string, path2: string): boolean {
+    const suffix1 = getPathSuffix(path1);
+    const suffix2 = getPathSuffix(path2);
+    return suffix1 === suffix2;
+}
 
 export interface ClassifiedLine {
     filePath: string;
@@ -148,7 +160,7 @@ export class ClassificationManager {
      */
     public async removeClassification(filePath: string, line: number): Promise<void> {
         for (const [key, list] of this.classifications.entries()) {
-            const index = list.findIndex(c => c.filePath === filePath && c.line === line);
+            const index = list.findIndex(c => pathsMatch(c.filePath, filePath) && c.line === line);
             if (index !== -1) {
                 list.splice(index, 1);
                 if (list.length === 0) {
@@ -293,10 +305,11 @@ export class ClassificationManager {
 
     /**
      * 특정 파일의 라인이 분류되었는지 확인
+     * 경로가 다른 PC에서 생성된 경우에도 매칭되도록 suffix 비교 사용
      */
     public isClassified(filePath: string, line: number): ClassifiedLine | undefined {
         for (const list of this.classifications.values()) {
-            const found = list.find(c => c.filePath === filePath && c.line === line);
+            const found = list.find(c => pathsMatch(c.filePath, filePath) && c.line === line);
             if (found) {
                 return found;
             }
