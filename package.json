@@ -4,6 +4,11 @@
   "description": "Coverage XML 파일을 사용하여 코드 커버리지를 시각화합니다",
   "version": "1.14.2",
   "publisher": "your-publisher",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/needitem/vscode-coverage-highlighter.git"
+  },
+  "license": "MIT",
   "engines": {
     "vscode": "^1.74.0"
   },
