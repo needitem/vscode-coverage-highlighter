@@ -93,6 +93,9 @@ export function activate(context: vscode.ExtensionContext) {
     lineTracker = new LineTracker();
     classificationManager = new ClassificationManager(context);
 
+    // highlighter에 classificationManager 연결
+    highlighter.setClassificationManager(classificationManager);
+
     // TreeView 등록
     treeDataProvider = new CoverageTreeDataProvider(classificationManager);
     treeDataProvider.setLineTracker(lineTracker);
@@ -243,6 +246,16 @@ export function activate(context: vscode.ExtensionContext) {
         await loadXmlFile(xmlPath);
     });
 
+    // 분류된 항목 하이라이트 토글
+    const toggleHideClassifiedCommand = vscode.commands.registerCommand('coverage-highlighter.toggleHideClassified', () => {
+        const current = highlighter.getHideClassified();
+        highlighter.setHideClassified(!current);
+        applyHighlightsToAllEditors();
+        treeDataProvider.setHideClassified(!current);
+        treeDataProvider.refresh();
+        vscode.window.showInformationMessage(`분류된 항목 숨기기: ${!current ? 'ON' : 'OFF'}`);
+    });
+
     context.subscriptions.push(
         loadCommand, clearCommand, summaryCommand,
         classifyLineCommand, classifySelectionCommand,
@@ -252,7 +265,8 @@ export function activate(context: vscode.ExtensionContext) {
         quickSlot4Command, quickSlot5Command, quickSlot6Command,
         quickSlot7Command, quickSlot8Command, quickSlot9Command,
         classifyFromTreeCommand, loadRecentXmlCommand,
-        quickClassifyFromTreeDocumentCommand, quickClassifyFromTreeCommentCommand, quickClassifyFromTreeCoverCommand
+        quickClassifyFromTreeDocumentCommand, quickClassifyFromTreeCommentCommand, quickClassifyFromTreeCoverCommand,
+        toggleHideClassifiedCommand
     );
 
     // TreeView에 최근 파일 목록 전달

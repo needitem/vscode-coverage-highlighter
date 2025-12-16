@@ -28,6 +28,7 @@ export class CoverageTreeDataProvider implements vscode.TreeDataProvider<TreeIte
     private lineTracker: LineTracker | undefined;
     private currentXmlPath: string | undefined;
     private recentXmlFiles: string[] = [];
+    private hideClassified: boolean = false;
 
     constructor(classificationManager: ClassificationManager) {
         this.classificationManager = classificationManager;
@@ -39,6 +40,10 @@ export class CoverageTreeDataProvider implements vscode.TreeDataProvider<TreeIte
 
     setRecentXmlFiles(files: string[]): void {
         this.recentXmlFiles = files;
+    }
+
+    setHideClassified(hide: boolean): void {
+        this.hideClassified = hide;
     }
 
     setLineTracker(lineTracker: LineTracker): void {
@@ -252,9 +257,11 @@ export class CoverageTreeDataProvider implements vscode.TreeDataProvider<TreeIte
     }
 
     private getActionItems(): TreeItemData[] {
+        const hideLabel = this.hideClassified ? '분류된 항목 보이기' : '분류된 항목 숨기기';
         return [
             { type: 'action', label: 'XML 로드', command: 'coverage-highlighter.loadCoverage' },
             { type: 'action', label: '하이라이트 제거', command: 'coverage-highlighter.clearCoverage' },
+            { type: 'action', label: hideLabel, command: 'coverage-highlighter.toggleHideClassified' },
             { type: 'action', label: '사유 관리', command: 'coverage-highlighter.manageReasons' },
             { type: 'action', label: '보고서 생성', command: 'coverage-highlighter.generateReport' }
         ];

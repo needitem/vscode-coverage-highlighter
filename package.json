@@ -2,7 +2,7 @@
   "name": "coverage-highlighter",
   "displayName": "Coverage Highlighter",
   "description": "Coverage XML 파일을 사용하여 코드 커버리지를 시각화합니다",
-  "version": "1.8.0",
+  "version": "1.9.0",
   "publisher": "your-publisher",
   "engines": {
     "vscode": "^1.74.0"
@@ -140,6 +140,11 @@
         "command": "coverage-highlighter.quickClassifyFromTreeCover",
         "title": "태울예정",
         "icon": "$(flame)"
+      },
+      {
+        "command": "coverage-highlighter.toggleHideClassified",
+        "title": "Coverage: 분류된 항목 숨기기 토글",
+        "icon": "$(eye)"
       }
     ],
     "menus": {

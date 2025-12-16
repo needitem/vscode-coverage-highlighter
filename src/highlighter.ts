@@ -1,16 +1,31 @@
 import * as vscode from 'vscode';
 import { FileCoverage } from './coverageParser';
+import { ClassificationManager } from './classificationManager';
 
 export class CoverageHighlighter {
     private coveredDecorationType: vscode.TextEditorDecorationType;
     private uncoveredDecorationType: vscode.TextEditorDecorationType;
     private partialDecorationType: vscode.TextEditorDecorationType;
     private activeDecorations: Map<string, vscode.TextEditorDecorationType[]> = new Map();
+    private classificationManager: ClassificationManager | undefined;
+    private hideClassified: boolean = false;
 
     constructor() {
         this.coveredDecorationType = this.createDecorationType('covered');
         this.uncoveredDecorationType = this.createDecorationType('uncovered');
         this.partialDecorationType = this.createDecorationType('partial');
+    }
+
+    public setClassificationManager(manager: ClassificationManager): void {
+        this.classificationManager = manager;
+    }
+
+    public setHideClassified(hide: boolean): void {
+        this.hideClassified = hide;
+    }
+
+    public getHideClassified(): boolean {
+        return this.hideClassified;
     }
 
     private createDecorationType(type: 'covered' | 'uncovered' | 'partial'): vscode.TextEditorDecorationType {
@@ -50,6 +65,7 @@ export class CoverageHighlighter {
 
         const document = editor.document;
         const lineCount = document.lineCount;
+        const filePath = coverage.fileName;
 
         // Create ranges for covered lines
         for (const lineNum of coverage.coveredLines) {
@@ -62,6 +78,12 @@ export class CoverageHighlighter {
         // Create ranges for uncovered lines
         for (const lineNum of coverage.uncoveredLines) {
             if (lineNum > 0 && lineNum <= lineCount) {
+                // 분류된 라인 숨기기 옵션이 켜져 있으면 분류된 라인 제외
+                if (this.hideClassified && this.classificationManager) {
+                    if (this.classificationManager.isClassified(filePath, lineNum)) {
+                        continue;
+                    }
+                }
                 const line = document.lineAt(lineNum - 1);
                 uncoveredRanges.push(line.range);
             }
@@ -70,6 +92,12 @@ export class CoverageHighlighter {
         // Create ranges for partial covered lines
         for (const lineNum of coverage.partialCoveredLines) {
             if (lineNum > 0 && lineNum <= lineCount) {
+                // 분류된 라인 숨기기 옵션이 켜져 있으면 분류된 라인 제외
+                if (this.hideClassified && this.classificationManager) {
+                    if (this.classificationManager.isClassified(filePath, lineNum)) {
+                        continue;
+                    }
+                }
                 const line = document.lineAt(lineNum - 1);
                 partialRanges.push(line.range);
             }
