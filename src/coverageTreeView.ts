@@ -309,7 +309,6 @@ export class CoverageTreeDataProvider implements vscode.TreeDataProvider<TreeIte
         const hideLabel = this.hideClassified ? '분류된 항목 보이기' : '분류된 항목 숨기기';
         return [
             { type: 'action', label: 'XML 로드', command: 'coverage-highlighter.loadCoverage' },
-            { type: 'action', label: '하이라이트 제거', command: 'coverage-highlighter.clearCoverage' },
             { type: 'action', label: hideLabel, command: 'coverage-highlighter.toggleHideClassified' },
             { type: 'action', label: '사유 관리', command: 'coverage-highlighter.manageReasons' },
             { type: 'action', label: '보고서 생성', command: 'coverage-highlighter.generateReport' }
@@ -361,18 +360,19 @@ export class CoverageTreeDataProvider implements vscode.TreeDataProvider<TreeIte
         const classifications = this.classificationManager.getClassificationsByCategory(category);
         const items = classifications.get(reason) || [];
 
-        // 파일별로 그룹화
+        // filePath로 그룹화 (fileName이 아닌 전체 경로로)
         const byFile = new Map<string, ClassifiedLine[]>();
         for (const item of items) {
-            if (!byFile.has(item.fileName)) {
-                byFile.set(item.fileName, []);
+            const key = item.filePath;  // 전체 경로 사용
+            if (!byFile.has(key)) {
+                byFile.set(key, []);
             }
-            byFile.get(item.fileName)!.push(item);
+            byFile.get(key)!.push(item);
         }
 
         const result: TreeItemData[] = [];
-        for (const [fileName, lines] of byFile) {
-            const filePath = lines[0]?.filePath;
+        for (const [filePath, lines] of byFile) {
+            const fileName = lines[0]?.fileName || path.basename(filePath);
             result.push({
                 type: 'file',
                 label: `${fileName} (${lines.length})`,
