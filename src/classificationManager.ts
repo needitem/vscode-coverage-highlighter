@@ -37,10 +37,44 @@ export class ClassificationManager {
     private static readonly REASONS_KEY = 'coverage-highlighter.reasons';
     private static readonly CLASSIFICATIONS_KEY = 'coverage-highlighter.classifications';
 
+    // 성능 최적화: 파일+라인 기반 인덱스 (O(1) lookup)
+    // key: "normalizedPathSuffix:line" -> ClassifiedLine
+    private classificationIndex: Map<string, ClassifiedLine> = new Map();
+
     constructor(context: vscode.ExtensionContext) {
         this.context = context;
         this.loadReasons();
         this.loadClassifications();
+        this.rebuildIndex();
+    }
+
+    // 인덱스 키 생성 (경로 suffix + 라인)
+    private getIndexKey(filePath: string, line: number): string {
+        const suffix = getPathSuffix(filePath);
+        return `${suffix}:${line}`;
+    }
+
+    // 인덱스 재구축
+    private rebuildIndex(): void {
+        this.classificationIndex.clear();
+        for (const list of this.classifications.values()) {
+            for (const item of list) {
+                const key = this.getIndexKey(item.filePath, item.line);
+                this.classificationIndex.set(key, item);
+            }
+        }
+    }
+
+    // 인덱스에 항목 추가
+    private addToIndex(item: ClassifiedLine): void {
+        const key = this.getIndexKey(item.filePath, item.line);
+        this.classificationIndex.set(key, item);
+    }
+
+    // 인덱스에서 항목 제거
+    private removeFromIndex(filePath: string, line: number): void {
+        const key = this.getIndexKey(filePath, line);
+        this.classificationIndex.delete(key);
     }
 
     /**
@@ -137,6 +171,8 @@ export class ClassificationManager {
         const exists = list.some(c => c.filePath === filePath && c.line === line);
         if (!exists) {
             list.push(classification);
+            // 인덱스 업데이트
+            this.addToIndex(classification);
             await this.saveClassifications();
         }
     }
@@ -168,6 +204,8 @@ export class ClassificationManager {
                 }
             }
         }
+        // 인덱스에서 제거
+        this.removeFromIndex(filePath, line);
         await this.saveClassifications();
     }
 
@@ -305,15 +343,10 @@ export class ClassificationManager {
 
     /**
      * 특정 파일의 라인이 분류되었는지 확인
-     * 경로가 다른 PC에서 생성된 경우에도 매칭되도록 suffix 비교 사용
+     * O(1) lookup using index
      */
     public isClassified(filePath: string, line: number): ClassifiedLine | undefined {
-        for (const list of this.classifications.values()) {
-            const found = list.find(c => pathsMatch(c.filePath, filePath) && c.line === line);
-            if (found) {
-                return found;
-            }
-        }
-        return undefined;
+        const key = this.getIndexKey(filePath, line);
+        return this.classificationIndex.get(key);
     }
 }

@@ -2,7 +2,7 @@
   "name": "coverage-highlighter",
   "displayName": "Coverage Highlighter",
   "description": "Coverage XML 파일을 사용하여 코드 커버리지를 시각화합니다",
-  "version": "1.9.0",
+  "version": "1.14.0",
   "publisher": "your-publisher",
   "engines": {
     "vscode": "^1.74.0"
@@ -37,11 +37,6 @@
         "command": "coverage-highlighter.loadCoverage",
         "title": "Coverage: Load Coverage XML",
         "icon": "$(folder-opened)"
-      },
-      {
-        "command": "coverage-highlighter.clearCoverage",
-        "title": "Coverage: Clear Highlights",
-        "icon": "$(clear-all)"
       },
       {
         "command": "coverage-highlighter.showSummary",
@@ -123,10 +118,6 @@
         "title": "Coverage: 빠른 분류 슬롯 9"
       },
       {
-        "command": "coverage-highlighter.loadRecentXml",
-        "title": "Coverage: 최근 XML 로드"
-      },
-      {
         "command": "coverage-highlighter.quickClassifyFromTreeDocument",
         "title": "문서",
         "icon": "$(file-text)"
@@ -145,6 +136,34 @@
         "command": "coverage-highlighter.toggleHideClassified",
         "title": "Coverage: 분류된 항목 숨기기 토글",
         "icon": "$(eye)"
+      },
+      {
+        "command": "coverage-highlighter.classifyFromTreeWithReason",
+        "title": "사유로 분류"
+      },
+      {
+        "command": "coverage-highlighter.classifyFromTreeNewReason",
+        "title": "새 사유로 분류"
+      },
+      {
+        "command": "coverage-highlighter.bulkClassify",
+        "title": "선택 항목 일괄 분류",
+        "icon": "$(checklist)"
+      },
+      {
+        "command": "coverage-highlighter.bulkRemoveClassification",
+        "title": "선택 항목 일괄 삭제",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "coverage-highlighter.bulkEditClassification",
+        "title": "선택 항목 일괄 수정",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "coverage-highlighter.editClassification",
+        "title": "분류 수정",
+        "icon": "$(edit)"
       }
     ],
     "menus": {
@@ -179,24 +198,44 @@
       ],
       "view/item/context": [
         {
-          "command": "coverage-highlighter.removeClassification",
-          "when": "view == coverageExplorer && viewItem == classifiedLine",
-          "group": "inline"
+          "command": "coverage-highlighter.bulkClassify",
+          "when": "view == coverageExplorer && viewItem == unclassifiedLine",
+          "group": "1_classify@1"
         },
         {
           "command": "coverage-highlighter.quickClassifyFromTreeDocument",
           "when": "view == coverageExplorer && viewItem == unclassifiedLine",
-          "group": "inline@1"
+          "group": "1_classify@2"
         },
         {
           "command": "coverage-highlighter.quickClassifyFromTreeComment",
           "when": "view == coverageExplorer && viewItem == unclassifiedLine",
-          "group": "inline@2"
+          "group": "1_classify@3"
         },
         {
           "command": "coverage-highlighter.quickClassifyFromTreeCover",
           "when": "view == coverageExplorer && viewItem == unclassifiedLine",
-          "group": "inline@3"
+          "group": "1_classify@4"
+        },
+        {
+          "command": "coverage-highlighter.editClassification",
+          "when": "view == coverageExplorer && viewItem == classifiedLine",
+          "group": "1_modify@1"
+        },
+        {
+          "command": "coverage-highlighter.bulkEditClassification",
+          "when": "view == coverageExplorer && viewItem == classifiedLine",
+          "group": "1_modify@2"
+        },
+        {
+          "command": "coverage-highlighter.removeClassification",
+          "when": "view == coverageExplorer && viewItem == classifiedLine",
+          "group": "2_delete@1"
+        },
+        {
+          "command": "coverage-highlighter.bulkRemoveClassification",
+          "when": "view == coverageExplorer && viewItem == classifiedLine",
+          "group": "2_delete@2"
         }
       ]
     },

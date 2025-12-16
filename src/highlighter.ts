@@ -65,7 +65,23 @@ export class CoverageHighlighter {
 
         const document = editor.document;
         const lineCount = document.lineCount;
-        const filePath = coverage.fileName;
+        // 분류 체크를 위해 로컬 경로와 coverage 경로 모두 사용
+        const localFilePath = editor.document.uri.fsPath;
+        const coverageFilePath = coverage.fileName;
+
+        // 성능 최적화: 분류된 라인 Set을 미리 구축 (hideClassified일 때만)
+        let classifiedLines: Set<number> | undefined;
+        if (this.hideClassified && this.classificationManager) {
+            classifiedLines = new Set<number>();
+            // uncoveredLines와 partialCoveredLines에서만 분류 체크가 필요
+            const linesToCheck = [...coverage.uncoveredLines, ...coverage.partialCoveredLines];
+            for (const lineNum of linesToCheck) {
+                if (this.classificationManager.isClassified(localFilePath, lineNum) ||
+                    this.classificationManager.isClassified(coverageFilePath, lineNum)) {
+                    classifiedLines.add(lineNum);
+                }
+            }
+        }
 
         // Create ranges for covered lines
         for (const lineNum of coverage.coveredLines) {
@@ -78,11 +94,9 @@ export class CoverageHighlighter {
         // Create ranges for uncovered lines
         for (const lineNum of coverage.uncoveredLines) {
             if (lineNum > 0 && lineNum <= lineCount) {
-                // 분류된 라인 숨기기 옵션이 켜져 있으면 분류된 라인 제외
-                if (this.hideClassified && this.classificationManager) {
-                    if (this.classificationManager.isClassified(filePath, lineNum)) {
-                        continue;
-                    }
+                // 분류된 라인은 제외
+                if (classifiedLines?.has(lineNum)) {
+                    continue;
                 }
                 const line = document.lineAt(lineNum - 1);
                 uncoveredRanges.push(line.range);
@@ -92,11 +106,9 @@ export class CoverageHighlighter {
         // Create ranges for partial covered lines
         for (const lineNum of coverage.partialCoveredLines) {
             if (lineNum > 0 && lineNum <= lineCount) {
-                // 분류된 라인 숨기기 옵션이 켜져 있으면 분류된 라인 제외
-                if (this.hideClassified && this.classificationManager) {
-                    if (this.classificationManager.isClassified(filePath, lineNum)) {
-                        continue;
-                    }
+                // 분류된 라인은 제외
+                if (classifiedLines?.has(lineNum)) {
+                    continue;
                 }
                 const line = document.lineAt(lineNum - 1);
                 partialRanges.push(line.range);

@@ -44,7 +44,16 @@ function parseLineList(value: string | number | undefined): number[] {
 
 export function parseCoverageXml(xmlPath: string): CoverageData {
     const xmlContent = fs.readFileSync(xmlPath, 'utf-8');
+    return parseCoverageXmlContent(xmlContent);
+}
 
+// 비동기 버전 - 대용량 파일에 권장
+export async function parseCoverageXmlAsync(xmlPath: string): Promise<CoverageData> {
+    const xmlContent = await fs.promises.readFile(xmlPath, 'utf-8');
+    return parseCoverageXmlContent(xmlContent);
+}
+
+function parseCoverageXmlContent(xmlContent: string): CoverageData {
     const parser = new XMLParser({
         ignoreAttributes: false,
         parseTagValue: true,
@@ -152,56 +161,73 @@ export function findMatchingCoverage(
     return undefined;
 }
 
-// Find local file path matching coverage file path in workspace
+// 파일 경로 캐시 (coverage path -> local path)
+const filePathCache: Map<string, string | null> = new Map();
+
+// Find local file path matching coverage file path in workspace (동기 버전 - 캐시된 결과만 반환)
 export function findLocalFilePath(
     coverageFilePath: string,
-    workspaceRoot: string,
-    matchDepth: number = 5
+    _workspaceRoot?: string,
+    _matchDepth?: number
 ): string | undefined {
-    const fs = require('fs');
-    const path = require('path');
+    const cached = filePathCache.get(coverageFilePath);
+    if (cached !== undefined) {
+        return cached || undefined;
+    }
+    return undefined;
+}
+
+// Find local file path matching coverage file path in workspace (비동기 버전 - VSCode API 사용)
+export async function findLocalFilePathAsync(
+    coverageFilePath: string,
+    matchDepth: number = 5
+): Promise<string | undefined> {
+    // 캐시 확인
+    const cached = filePathCache.get(coverageFilePath);
+    if (cached !== undefined) {
+        return cached || undefined;
+    }
 
     const covSuffix = getPathSuffix(coverageFilePath, matchDepth);
-    const suffixParts = covSuffix.split('/');
+    const fileName = coverageFilePath.split(/[/\\]/).pop() || '';
 
-    // Try to find file in workspace
-    function searchDir(dir: string, depth: number): string | undefined {
-        if (depth > 10) return undefined; // Prevent infinite recursion
-
-        try {
-            const entries = fs.readdirSync(dir, { withFileTypes: true });
-
-            for (const entry of entries) {
-                const fullPath = path.join(dir, entry.name);
-
-                if (entry.isDirectory()) {
-                    // Skip common non-source directories
-                    if (['node_modules', '.git', 'bin', 'obj', 'dist', 'out'].includes(entry.name)) {
-                        continue;
-                    }
-                    const result = searchDir(fullPath, depth + 1);
-                    if (result) return result;
-                } else if (entry.isFile()) {
-                    const localSuffix = getPathSuffix(fullPath, matchDepth);
-                    if (localSuffix === covSuffix) {
-                        return fullPath;
-                    }
-                }
-            }
-        } catch {
-            // Ignore permission errors etc
-        }
-
+    if (!fileName) {
+        filePathCache.set(coverageFilePath, null);
         return undefined;
     }
 
-    const result = searchDir(workspaceRoot, 0);
-    if (result) return result;
+    try {
+        // VSCode의 findFiles API 사용 - 훨씬 빠르고 비동기
+        const vscode = await import('vscode');
+        const files = await vscode.workspace.findFiles(
+            `**/${fileName}`,
+            '**/node_modules/**',
+            10 // 최대 10개까지만 검색
+        );
 
-    // Try with shorter match if not found
-    if (matchDepth > 2) {
-        return findLocalFilePath(coverageFilePath, workspaceRoot, matchDepth - 1);
+        for (const file of files) {
+            const localSuffix = getPathSuffix(file.fsPath, matchDepth);
+            if (localSuffix === covSuffix) {
+                filePathCache.set(coverageFilePath, file.fsPath);
+                return file.fsPath;
+            }
+        }
+
+        // 더 짧은 매칭 시도
+        if (matchDepth > 2) {
+            const result = await findLocalFilePathAsync(coverageFilePath, matchDepth - 1);
+            return result;
+        }
+
+        filePathCache.set(coverageFilePath, null);
+        return undefined;
+    } catch {
+        filePathCache.set(coverageFilePath, null);
+        return undefined;
     }
+}
 
-    return undefined;
+// 캐시 초기화
+export function clearFilePathCache(): void {
+    filePathCache.clear();
 }
