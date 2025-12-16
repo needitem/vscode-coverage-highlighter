@@ -2,7 +2,7 @@
   "name": "coverage-highlighter",
   "displayName": "Coverage Highlighter",
   "description": "Coverage XML 파일을 사용하여 코드 커버리지를 시각화합니다",
-  "version": "1.4.1",
+  "version": "1.5.0",
   "publisher": "your-publisher",
   "engines": {
     "vscode": "^1.74.0"
@@ -82,6 +82,26 @@
         "command": "coverage-highlighter.removeClassification",
         "title": "분류 제거",
         "icon": "$(trash)"
+      },
+      {
+        "command": "coverage-highlighter.quickClassifyDocument",
+        "title": "Coverage: 문서로 분류 (Ctrl+Shift+1)",
+        "icon": "$(file-text)"
+      },
+      {
+        "command": "coverage-highlighter.quickClassifyComment",
+        "title": "Coverage: 주석예정으로 분류 (Ctrl+Shift+2)",
+        "icon": "$(comment)"
+      },
+      {
+        "command": "coverage-highlighter.quickClassifyCover",
+        "title": "Coverage: 태울예정으로 분류 (Ctrl+Shift+3)",
+        "icon": "$(flame)"
+      },
+      {
+        "command": "coverage-highlighter.classifyFromTree",
+        "title": "분류하기",
+        "icon": "$(add)"
       }
     ],
     "menus": {
@@ -119,9 +139,31 @@
           "command": "coverage-highlighter.removeClassification",
           "when": "view == coverageExplorer && viewItem == classifiedLine",
           "group": "inline"
+        },
+        {
+          "command": "coverage-highlighter.classifyFromTree",
+          "when": "view == coverageExplorer && viewItem == unclassifiedLine",
+          "group": "inline"
         }
       ]
     },
+    "keybindings": [
+      {
+        "command": "coverage-highlighter.quickClassifyDocument",
+        "key": "ctrl+shift+1",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "coverage-highlighter.quickClassifyComment",
+        "key": "ctrl+shift+2",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "coverage-highlighter.quickClassifyCover",
+        "key": "ctrl+shift+3",
+        "when": "editorTextFocus"
+      }
+    ],
     "configuration": {
       "title": "Coverage Highlighter",
       "properties": {
@@ -139,6 +181,12 @@
           "type": "string",
           "default": "rgba(255, 255, 0, 0.2)",
           "description": "부분 커버된 코드의 배경색"
+        },
+        "coverageHighlighter.defaultCategory": {
+          "type": "string",
+          "enum": ["document", "comment-planned", "cover-planned"],
+          "default": "cover-planned",
+          "description": "기본 분류 카테고리 (단축키 없이 분류 시 사용)"
         }
       }
     }

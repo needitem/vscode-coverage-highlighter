@@ -173,11 +173,33 @@ export function activate(context: vscode.ExtensionContext) {
         }
     });
 
+    // 빠른 분류 명령들 (단축키용)
+    const quickClassifyDocumentCommand = vscode.commands.registerCommand('coverage-highlighter.quickClassifyDocument', async () => {
+        await quickClassify('document');
+    });
+
+    const quickClassifyCommentCommand = vscode.commands.registerCommand('coverage-highlighter.quickClassifyComment', async () => {
+        await quickClassify('comment-planned');
+    });
+
+    const quickClassifyCoverCommand = vscode.commands.registerCommand('coverage-highlighter.quickClassifyCover', async () => {
+        await quickClassify('cover-planned');
+    });
+
+    // TreeView에서 미분류 항목 분류
+    const classifyFromTreeCommand = vscode.commands.registerCommand('coverage-highlighter.classifyFromTree', async (item: any) => {
+        if (item && item.filePath && item.line) {
+            await classifyLinesFromTree(item.filePath, item.line);
+        }
+    });
+
     context.subscriptions.push(
         loadCommand, clearCommand, summaryCommand,
         classifyLineCommand, classifySelectionCommand,
         manageReasonsCommand, generateReportCommand, showClassificationsCommand,
-        refreshTreeCommand, goToLineCommand, removeClassificationCommand
+        refreshTreeCommand, goToLineCommand, removeClassificationCommand,
+        quickClassifyDocumentCommand, quickClassifyCommentCommand, quickClassifyCoverCommand,
+        classifyFromTreeCommand
     );
 
     // Apply highlights when editor changes
@@ -417,6 +439,62 @@ async function classifyLines(filePath: string, lines: number[]) {
 
     // 캐시 저장
     await saveCache();
+}
+
+// 빠른 분류 (단축키용) - 다이얼로그 없이 바로 분류
+async function quickClassify(category: 'document' | 'comment-planned' | 'cover-planned') {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) {
+        vscode.window.showWarningMessage('No active editor');
+        return;
+    }
+
+    const line = editor.selection.active.line + 1;
+    const filePath = editor.document.uri.fsPath;
+
+    // 연속된 uncovered 블록 자동 선택
+    const blockLines = lineTracker.getUncoveredBlock(filePath, line);
+
+    let reasonLabel = '';
+
+    // 문서 카테고리는 사유 필요
+    if (category === 'document') {
+        const reasons = classificationManager.getReasons();
+        if (reasons.length === 0) {
+            // 사유가 없으면 새로 입력받기
+            const newReason = await vscode.window.showInputBox({
+                prompt: '사유를 입력하세요',
+                placeHolder: '예: UI 관련 코드'
+            });
+            if (!newReason) return;
+            await classificationManager.addReason(newReason);
+            reasonLabel = newReason;
+        } else {
+            // 빠른 선택
+            const reasonChoice = await vscode.window.showQuickPick(
+                reasons.map(r => r.label),
+                { placeHolder: '사유를 선택하세요' }
+            );
+            if (!reasonChoice) return;
+            reasonLabel = reasonChoice;
+        }
+    }
+
+    await classificationManager.classifyLines(filePath, blockLines, category, reasonLabel);
+
+    const categoryLabel = category === 'document' ? '문서' : category === 'comment-planned' ? '주석예정' : '태울예정';
+    vscode.window.showInformationMessage(`${blockLines.length}개 라인 → ${categoryLabel}`);
+
+    treeDataProvider.refresh();
+    await saveCache();
+}
+
+// TreeView에서 미분류 항목 분류
+async function classifyLinesFromTree(filePath: string, startLine: number) {
+    // 해당 라인이 포함된 블록 찾기 (coverage 데이터에서)
+    const lines = [startLine]; // TreeView에서는 블록 시작 라인만 전달됨
+
+    await classifyLines(filePath, lines);
 }
 
 async function manageReasons() {

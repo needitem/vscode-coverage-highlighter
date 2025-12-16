@@ -14,6 +14,7 @@ interface TreeItemData {
     filePath?: string;
     line?: number;
     command?: string;
+    isUnclassified?: boolean;
 }
 
 export class CoverageTreeDataProvider implements vscode.TreeDataProvider<TreeItemData> {
@@ -86,6 +87,10 @@ export class CoverageTreeDataProvider implements vscode.TreeDataProvider<TreeIte
                     // 분류된 항목인 경우 contextValue 설정 (삭제 가능하도록)
                     if (element.category) {
                         treeItem.contextValue = 'classifiedLine';
+                    }
+                    // 미분류 항목인 경우 contextValue 설정 (분류 가능하도록)
+                    if (element.isUnclassified) {
+                        treeItem.contextValue = 'unclassifiedLine';
                     }
                 }
                 break;
@@ -350,7 +355,8 @@ export class CoverageTreeDataProvider implements vscode.TreeDataProvider<TreeIte
             type: 'line' as TreeItemType,
             label: block.length === 1 ? `Line ${block[0]}` : `Line ${block[0]}-${block[block.length - 1]}`,
             filePath: filePath,
-            line: block[0]
+            line: block[0],
+            isUnclassified: true
         }));
     }
 
