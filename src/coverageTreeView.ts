@@ -4,7 +4,7 @@ import { CoverageData, FileCoverage } from './coverageParser';
 import { ClassificationManager, ClassifiedLine } from './classificationManager';
 import { LineTracker } from './lineTracker';
 
-type TreeItemType = 'root' | 'category' | 'reason' | 'file' | 'line' | 'action' | 'unclassified-file' | 'unclassified-line' | 'classify-option';
+type TreeItemType = 'root' | 'category' | 'reason' | 'file' | 'line' | 'action' | 'unclassified-file' | 'unclassified-line' | 'classify-option' | 'recent-xml';
 
 interface TreeItemData {
     type: TreeItemType;
@@ -16,6 +16,8 @@ interface TreeItemData {
     lines?: number[];  // 블록의 모든 라인 (연속 라인 지원)
     command?: string;
     isUnclassified?: boolean;
+    xmlPath?: string;
+    isCurrent?: boolean;
 }
 
 export class CoverageTreeDataProvider implements vscode.TreeDataProvider<TreeItemData> {
@@ -28,9 +30,19 @@ export class CoverageTreeDataProvider implements vscode.TreeDataProvider<TreeIte
     private hideClassified: boolean = false;
     private treeView: vscode.TreeView<TreeItemData> | undefined;
     private recentlyClassifiedLines: Set<string> = new Set();
+    private recentXmlFiles: string[] = [];
+    private currentXmlPath: string | undefined;
 
     constructor(classificationManager: ClassificationManager) {
         this.classificationManager = classificationManager;
+    }
+
+    setRecentXmlFiles(files: string[]): void {
+        this.recentXmlFiles = files;
+    }
+
+    setCurrentXmlPath(xmlPath: string | undefined): void {
+        this.currentXmlPath = xmlPath;
     }
 
     setTreeView(treeView: vscode.TreeView<TreeItemData>): void {
@@ -222,6 +234,24 @@ export class CoverageTreeDataProvider implements vscode.TreeDataProvider<TreeIte
                     };
                 }
                 break;
+
+            case 'recent-xml':
+                treeItem.collapsibleState = vscode.TreeItemCollapsibleState.None;
+                if (element.isCurrent) {
+                    treeItem.iconPath = new vscode.ThemeIcon('check');
+                    treeItem.description = '(현재)';
+                } else {
+                    treeItem.iconPath = new vscode.ThemeIcon('file-code');
+                }
+                if (element.xmlPath) {
+                    treeItem.command = {
+                        command: 'coverage-highlighter.loadRecentXml',
+                        title: 'Load XML',
+                        arguments: [element.xmlPath]
+                    };
+                    treeItem.tooltip = element.xmlPath;
+                }
+                break;
         }
 
         return treeItem;
@@ -307,12 +337,27 @@ export class CoverageTreeDataProvider implements vscode.TreeDataProvider<TreeIte
 
     private getActionItems(): TreeItemData[] {
         const hideLabel = this.hideClassified ? '분류된 항목 보이기' : '분류된 항목 숨기기';
-        return [
-            { type: 'action', label: 'XML 로드', command: 'coverage-highlighter.loadCoverage' },
+        const items: TreeItemData[] = [
+            { type: 'action', label: 'XML 로드', command: 'coverage-highlighter.loadCoverage' }
+        ];
+
+        // 최근 XML 파일 목록 추가
+        for (const xmlPath of this.recentXmlFiles) {
+            items.push({
+                type: 'recent-xml',
+                label: path.basename(xmlPath),
+                xmlPath,
+                isCurrent: xmlPath === this.currentXmlPath
+            });
+        }
+
+        items.push(
             { type: 'action', label: hideLabel, command: 'coverage-highlighter.toggleHideClassified' },
             { type: 'action', label: '사유 관리', command: 'coverage-highlighter.manageReasons' },
             { type: 'action', label: '보고서 생성', command: 'coverage-highlighter.generateReport' }
-        ];
+        );
+
+        return items;
     }
 
     private getCategoryItems(): TreeItemData[] {

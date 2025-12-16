@@ -256,6 +256,11 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.window.showInformationMessage(`분류된 항목 숨기기: ${!current ? 'ON' : 'OFF'}`);
     });
 
+    // 최근 XML 직접 로드
+    const loadRecentXmlCommand = vscode.commands.registerCommand('coverage-highlighter.loadRecentXml', async (xmlPath: string) => {
+        await loadXmlFile(xmlPath);
+    });
+
     // TreeView에서 사유와 함께 분류 (classify-option 클릭 시)
     const classifyFromTreeWithReasonCommand = vscode.commands.registerCommand('coverage-highlighter.classifyFromTreeWithReason',
         async (filePath: string, line: number, category: 'document' | 'comment-planned' | 'cover-planned', reason: string, lines?: number[]) => {
@@ -479,11 +484,17 @@ export function activate(context: vscode.ExtensionContext) {
         quickClassifyDocumentCommand, quickClassifyCommentCommand, quickClassifyCoverCommand,
         quickSlot4Command, quickSlot5Command, quickSlot6Command,
         quickSlot7Command, quickSlot8Command, quickSlot9Command,
-        classifyFromTreeCommand,
+        classifyFromTreeCommand, loadRecentXmlCommand,
         quickClassifyFromTreeDocumentCommand, quickClassifyFromTreeCommentCommand, quickClassifyFromTreeCoverCommand,
         toggleHideClassifiedCommand, classifyFromTreeWithReasonCommand,
         bulkClassifyCommand, bulkRemoveClassificationCommand, bulkEditClassificationCommand, editClassificationCommand
     );
+
+    // TreeView에 최근 파일 목록 전달
+    treeDataProvider.setRecentXmlFiles(recentXmlFiles);
+    if (currentXmlPath) {
+        treeDataProvider.setCurrentXmlPath(currentXmlPath);
+    }
 
     // Apply highlights when editor changes
     context.subscriptions.push(
@@ -676,6 +687,8 @@ async function loadXmlFile(xmlPath: string) {
 
             // TreeView 업데이트
             treeDataProvider.setCoverageData(coverageData);
+            treeDataProvider.setCurrentXmlPath(currentXmlPath);
+            treeDataProvider.setRecentXmlFiles(recentXmlFiles);
 
             // 캐시 저장
             await saveCache();
