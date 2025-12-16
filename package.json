@@ -2,7 +2,7 @@
   "name": "coverage-highlighter",
   "displayName": "Coverage Highlighter",
   "description": "Coverage XML 파일을 사용하여 코드 커버리지를 시각화합니다",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "publisher": "your-publisher",
   "engines": {
     "vscode": "^1.74.0"
@@ -99,9 +99,38 @@
         "icon": "$(flame)"
       },
       {
+        "command": "coverage-highlighter.quickSlot4",
+        "title": "Coverage: 빠른 분류 슬롯 4"
+      },
+      {
+        "command": "coverage-highlighter.quickSlot5",
+        "title": "Coverage: 빠른 분류 슬롯 5"
+      },
+      {
+        "command": "coverage-highlighter.quickSlot6",
+        "title": "Coverage: 빠른 분류 슬롯 6"
+      },
+      {
+        "command": "coverage-highlighter.quickSlot7",
+        "title": "Coverage: 빠른 분류 슬롯 7"
+      },
+      {
+        "command": "coverage-highlighter.quickSlot8",
+        "title": "Coverage: 빠른 분류 슬롯 8"
+      },
+      {
+        "command": "coverage-highlighter.quickSlot9",
+        "title": "Coverage: 빠른 분류 슬롯 9"
+      },
+      {
         "command": "coverage-highlighter.classifyFromTree",
         "title": "분류하기",
         "icon": "$(add)"
+      },
+      {
+        "command": "coverage-highlighter.manageShortcuts",
+        "title": "Coverage: 단축키 설정",
+        "icon": "$(keyboard)"
       }
     ],
     "menus": {
@@ -162,6 +191,36 @@
         "command": "coverage-highlighter.quickClassifyCover",
         "key": "ctrl+shift+3",
         "when": "editorTextFocus"
+      },
+      {
+        "command": "coverage-highlighter.quickSlot4",
+        "key": "ctrl+shift+4",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "coverage-highlighter.quickSlot5",
+        "key": "ctrl+shift+5",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "coverage-highlighter.quickSlot6",
+        "key": "ctrl+shift+6",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "coverage-highlighter.quickSlot7",
+        "key": "ctrl+shift+7",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "coverage-highlighter.quickSlot8",
+        "key": "ctrl+shift+8",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "coverage-highlighter.quickSlot9",
+        "key": "ctrl+shift+9",
+        "when": "editorTextFocus"
       }
     ],
     "configuration": {
@@ -187,6 +246,87 @@
           "enum": ["document", "comment-planned", "cover-planned"],
           "default": "cover-planned",
           "description": "기본 분류 카테고리 (단축키 없이 분류 시 사용)"
+        },
+        "coverageHighlighter.quickSlot1": {
+          "type": "object",
+          "default": { "category": "document", "reason": "" },
+          "description": "빠른 분류 슬롯 1 (Ctrl+Shift+1)",
+          "properties": {
+            "category": { "type": "string", "enum": ["document", "comment-planned", "cover-planned"] },
+            "reason": { "type": "string" }
+          }
+        },
+        "coverageHighlighter.quickSlot2": {
+          "type": "object",
+          "default": { "category": "comment-planned", "reason": "" },
+          "description": "빠른 분류 슬롯 2 (Ctrl+Shift+2)",
+          "properties": {
+            "category": { "type": "string", "enum": ["document", "comment-planned", "cover-planned"] },
+            "reason": { "type": "string" }
+          }
+        },
+        "coverageHighlighter.quickSlot3": {
+          "type": "object",
+          "default": { "category": "cover-planned", "reason": "" },
+          "description": "빠른 분류 슬롯 3 (Ctrl+Shift+3)",
+          "properties": {
+            "category": { "type": "string", "enum": ["document", "comment-planned", "cover-planned"] },
+            "reason": { "type": "string" }
+          }
+        },
+        "coverageHighlighter.quickSlot4": {
+          "type": "object",
+          "default": null,
+          "description": "빠른 분류 슬롯 4 (Ctrl+Shift+4)",
+          "properties": {
+            "category": { "type": "string", "enum": ["document", "comment-planned", "cover-planned"] },
+            "reason": { "type": "string" }
+          }
+        },
+        "coverageHighlighter.quickSlot5": {
+          "type": "object",
+          "default": null,
+          "description": "빠른 분류 슬롯 5 (Ctrl+Shift+5)",
+          "properties": {
+            "category": { "type": "string", "enum": ["document", "comment-planned", "cover-planned"] },
+            "reason": { "type": "string" }
+          }
+        },
+        "coverageHighlighter.quickSlot6": {
+          "type": "object",
+          "default": null,
+          "description": "빠른 분류 슬롯 6 (Ctrl+Shift+6)",
+          "properties": {
+            "category": { "type": "string", "enum": ["document", "comment-planned", "cover-planned"] },
+            "reason": { "type": "string" }
+          }
+        },
+        "coverageHighlighter.quickSlot7": {
+          "type": "object",
+          "default": null,
+          "description": "빠른 분류 슬롯 7 (Ctrl+Shift+7)",
+          "properties": {
+            "category": { "type": "string", "enum": ["document", "comment-planned", "cover-planned"] },
+            "reason": { "type": "string" }
+          }
+        },
+        "coverageHighlighter.quickSlot8": {
+          "type": "object",
+          "default": null,
+          "description": "빠른 분류 슬롯 8 (Ctrl+Shift+8)",
+          "properties": {
+            "category": { "type": "string", "enum": ["document", "comment-planned", "cover-planned"] },
+            "reason": { "type": "string" }
+          }
+        },
+        "coverageHighlighter.quickSlot9": {
+          "type": "object",
+          "default": null,
+          "description": "빠른 분류 슬롯 9 (Ctrl+Shift+9)",
+          "properties": {
+            "category": { "type": "string", "enum": ["document", "comment-planned", "cover-planned"] },
+            "reason": { "type": "string" }
+          }
         }
       }
     }

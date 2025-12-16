@@ -173,18 +173,26 @@ export function activate(context: vscode.ExtensionContext) {
         }
     });
 
-    // 빠른 분류 명령들 (단축키용)
+    // 빠른 분류 명령들 (단축키용) - 설정에서 슬롯 정보 읽음
     const quickClassifyDocumentCommand = vscode.commands.registerCommand('coverage-highlighter.quickClassifyDocument', async () => {
-        await quickClassify('document');
+        await executeQuickSlot(1);
     });
 
     const quickClassifyCommentCommand = vscode.commands.registerCommand('coverage-highlighter.quickClassifyComment', async () => {
-        await quickClassify('comment-planned');
+        await executeQuickSlot(2);
     });
 
     const quickClassifyCoverCommand = vscode.commands.registerCommand('coverage-highlighter.quickClassifyCover', async () => {
-        await quickClassify('cover-planned');
+        await executeQuickSlot(3);
     });
+
+    // 슬롯 4~9
+    const quickSlot4Command = vscode.commands.registerCommand('coverage-highlighter.quickSlot4', () => executeQuickSlot(4));
+    const quickSlot5Command = vscode.commands.registerCommand('coverage-highlighter.quickSlot5', () => executeQuickSlot(5));
+    const quickSlot6Command = vscode.commands.registerCommand('coverage-highlighter.quickSlot6', () => executeQuickSlot(6));
+    const quickSlot7Command = vscode.commands.registerCommand('coverage-highlighter.quickSlot7', () => executeQuickSlot(7));
+    const quickSlot8Command = vscode.commands.registerCommand('coverage-highlighter.quickSlot8', () => executeQuickSlot(8));
+    const quickSlot9Command = vscode.commands.registerCommand('coverage-highlighter.quickSlot9', () => executeQuickSlot(9));
 
     // TreeView에서 미분류 항목 분류
     const classifyFromTreeCommand = vscode.commands.registerCommand('coverage-highlighter.classifyFromTree', async (item: any) => {
@@ -193,13 +201,20 @@ export function activate(context: vscode.ExtensionContext) {
         }
     });
 
+    // 단축키 설정 관리
+    const manageShortcutsCommand = vscode.commands.registerCommand('coverage-highlighter.manageShortcuts', async () => {
+        await manageShortcuts();
+    });
+
     context.subscriptions.push(
         loadCommand, clearCommand, summaryCommand,
         classifyLineCommand, classifySelectionCommand,
         manageReasonsCommand, generateReportCommand, showClassificationsCommand,
         refreshTreeCommand, goToLineCommand, removeClassificationCommand,
         quickClassifyDocumentCommand, quickClassifyCommentCommand, quickClassifyCoverCommand,
-        classifyFromTreeCommand
+        quickSlot4Command, quickSlot5Command, quickSlot6Command,
+        quickSlot7Command, quickSlot8Command, quickSlot9Command,
+        classifyFromTreeCommand, manageShortcutsCommand
     );
 
     // Apply highlights when editor changes
@@ -441,8 +456,29 @@ async function classifyLines(filePath: string, lines: number[]) {
     await saveCache();
 }
 
-// 빠른 분류 (단축키용) - 다이얼로그 없이 바로 분류
-async function quickClassify(category: 'document' | 'comment-planned' | 'cover-planned') {
+// 슬롯 기반 빠른 분류 실행
+async function executeQuickSlot(slotNumber: number) {
+    const config = vscode.workspace.getConfiguration('coverageHighlighter');
+    const slotConfig = config.get<{ category: string; reason?: string }>(`quickSlot${slotNumber}`);
+
+    if (!slotConfig || !slotConfig.category) {
+        vscode.window.showWarningMessage(`슬롯 ${slotNumber}이 설정되지 않았습니다. 설정에서 coverageHighlighter.quickSlot${slotNumber}을 설정하세요.`);
+        return;
+    }
+
+    const category = slotConfig.category as 'document' | 'comment-planned' | 'cover-planned';
+    const reason = slotConfig.reason || '';
+
+    // 문서 카테고리인데 사유가 없으면 선택하도록
+    if (category === 'document' && !reason) {
+        await quickClassifyWithReasonPrompt(category);
+    } else {
+        await quickClassifyDirect(category, reason);
+    }
+}
+
+// 사유 프롬프트와 함께 빠른 분류
+async function quickClassifyWithReasonPrompt(category: 'document' | 'comment-planned' | 'cover-planned') {
     const editor = vscode.window.activeTextEditor;
     if (!editor) {
         vscode.window.showWarningMessage('No active editor');
@@ -451,17 +487,13 @@ async function quickClassify(category: 'document' | 'comment-planned' | 'cover-p
 
     const line = editor.selection.active.line + 1;
     const filePath = editor.document.uri.fsPath;
-
-    // 연속된 uncovered 블록 자동 선택
     const blockLines = lineTracker.getUncoveredBlock(filePath, line);
 
     let reasonLabel = '';
 
-    // 문서 카테고리는 사유 필요
     if (category === 'document') {
         const reasons = classificationManager.getReasons();
         if (reasons.length === 0) {
-            // 사유가 없으면 새로 입력받기
             const newReason = await vscode.window.showInputBox({
                 prompt: '사유를 입력하세요',
                 placeHolder: '예: UI 관련 코드'
@@ -470,7 +502,6 @@ async function quickClassify(category: 'document' | 'comment-planned' | 'cover-p
             await classificationManager.addReason(newReason);
             reasonLabel = newReason;
         } else {
-            // 빠른 선택
             const reasonChoice = await vscode.window.showQuickPick(
                 reasons.map(r => r.label),
                 { placeHolder: '사유를 선택하세요' }
@@ -489,12 +520,116 @@ async function quickClassify(category: 'document' | 'comment-planned' | 'cover-p
     await saveCache();
 }
 
+// 다이얼로그 없이 직접 분류
+async function quickClassifyDirect(category: 'document' | 'comment-planned' | 'cover-planned', reason: string) {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) {
+        vscode.window.showWarningMessage('No active editor');
+        return;
+    }
+
+    const line = editor.selection.active.line + 1;
+    const filePath = editor.document.uri.fsPath;
+    const blockLines = lineTracker.getUncoveredBlock(filePath, line);
+
+    await classificationManager.classifyLines(filePath, blockLines, category, reason);
+
+    const categoryLabel = category === 'document' ? '문서' : category === 'comment-planned' ? '주석예정' : '태울예정';
+    const msg = reason ? `${blockLines.length}개 라인 → ${categoryLabel} (${reason})` : `${blockLines.length}개 라인 → ${categoryLabel}`;
+    vscode.window.showInformationMessage(msg);
+
+    treeDataProvider.refresh();
+    await saveCache();
+}
+
 // TreeView에서 미분류 항목 분류
 async function classifyLinesFromTree(filePath: string, startLine: number) {
     // 해당 라인이 포함된 블록 찾기 (coverage 데이터에서)
     const lines = [startLine]; // TreeView에서는 블록 시작 라인만 전달됨
 
     await classifyLines(filePath, lines);
+}
+
+// 단축키 슬롯 설정 관리
+async function manageShortcuts() {
+    const config = vscode.workspace.getConfiguration('coverageHighlighter');
+
+    // 슬롯 목록 표시
+    const slotItems: { label: string; value: number; description: string }[] = [];
+    for (let i = 1; i <= 9; i++) {
+        const slotConfig = config.get<{ category: string; reason?: string }>(`quickSlot${i}`);
+        let desc = '(설정 안됨)';
+        if (slotConfig && slotConfig.category) {
+            const catLabel = slotConfig.category === 'document' ? '문서' : slotConfig.category === 'comment-planned' ? '주석예정' : '태울예정';
+            desc = slotConfig.reason ? `${catLabel} - ${slotConfig.reason}` : catLabel;
+        }
+        slotItems.push({
+            label: `Ctrl+Shift+${i}`,
+            value: i,
+            description: desc
+        });
+    }
+
+    const choice = await vscode.window.showQuickPick(slotItems, {
+        placeHolder: '설정할 단축키 슬롯을 선택하세요'
+    });
+
+    if (!choice) return;
+
+    // 카테고리 선택
+    const categoryChoice = await vscode.window.showQuickPick([
+        { label: '문서', value: 'document' },
+        { label: '주석 예정', value: 'comment-planned' },
+        { label: '태울 예정', value: 'cover-planned' },
+        { label: '(비우기)', value: '__clear__' }
+    ], {
+        placeHolder: '분류 카테고리 선택'
+    });
+    if (!categoryChoice) return;
+
+    if (categoryChoice.value === '__clear__') {
+        await config.update(`quickSlot${choice.value}`, null, vscode.ConfigurationTarget.Global);
+        vscode.window.showInformationMessage(`슬롯 ${choice.value} 설정이 제거되었습니다.`);
+        return;
+    }
+
+    let reason = '';
+    if (categoryChoice.value === 'document') {
+        // 사유 선택/입력
+        const reasons = classificationManager.getReasons();
+        const reasonItems = [
+            { label: '(사유 없이 - 매번 선택)', value: '' },
+            ...reasons.map(r => ({ label: r.label, value: r.label })),
+            { label: '$(add) 새 사유 입력...', value: '__new__' }
+        ];
+
+        const reasonChoice = await vscode.window.showQuickPick(reasonItems, {
+            placeHolder: '사유 선택 (문서 카테고리)'
+        });
+        if (!reasonChoice) return;
+
+        if (reasonChoice.value === '__new__') {
+            const newReason = await vscode.window.showInputBox({
+                prompt: '새 사유를 입력하세요',
+                placeHolder: '예: UI 관련 코드'
+            });
+            if (!newReason) return;
+            await classificationManager.addReason(newReason);
+            reason = newReason;
+        } else {
+            reason = reasonChoice.value;
+        }
+    }
+
+    // 설정에 저장
+    await config.update(`quickSlot${choice.value}`, {
+        category: categoryChoice.value,
+        reason: reason
+    }, vscode.ConfigurationTarget.Global);
+
+    const catLabel = categoryChoice.value === 'document' ? '문서' : categoryChoice.value === 'comment-planned' ? '주석예정' : '태울예정';
+    const msg = reason ? `슬롯 ${choice.value} → ${catLabel} (${reason})` : `슬롯 ${choice.value} → ${catLabel}`;
+    vscode.window.showInformationMessage(msg);
 }
 
 async function manageReasons() {

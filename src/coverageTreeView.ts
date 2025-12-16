@@ -201,6 +201,7 @@ export class CoverageTreeDataProvider implements vscode.TreeDataProvider<TreeIte
             { type: 'action', label: 'XML 로드', command: 'coverage-highlighter.loadCoverage' },
             { type: 'action', label: '하이라이트 제거', command: 'coverage-highlighter.clearCoverage' },
             { type: 'action', label: '사유 관리', command: 'coverage-highlighter.manageReasons' },
+            { type: 'action', label: '단축키 설정', command: 'coverage-highlighter.manageShortcuts' },
             { type: 'action', label: '보고서 생성', command: 'coverage-highlighter.generateReport' }
         ];
     }
