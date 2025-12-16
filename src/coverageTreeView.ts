@@ -4,7 +4,7 @@ import { CoverageData, FileCoverage } from './coverageParser';
 import { ClassificationManager, ClassifiedLine } from './classificationManager';
 import { LineTracker } from './lineTracker';
 
-type TreeItemType = 'root' | 'category' | 'reason' | 'file' | 'line' | 'action' | 'unclassified-file';
+type TreeItemType = 'root' | 'category' | 'reason' | 'file' | 'line' | 'action' | 'unclassified-file' | 'recent-xml';
 
 interface TreeItemData {
     type: TreeItemType;
@@ -15,6 +15,8 @@ interface TreeItemData {
     line?: number;
     command?: string;
     isUnclassified?: boolean;
+    xmlPath?: string;
+    isCurrent?: boolean;
 }
 
 export class CoverageTreeDataProvider implements vscode.TreeDataProvider<TreeItemData> {
@@ -24,9 +26,19 @@ export class CoverageTreeDataProvider implements vscode.TreeDataProvider<TreeIte
     private coverageData: CoverageData | undefined;
     private classificationManager: ClassificationManager;
     private lineTracker: LineTracker | undefined;
+    private currentXmlPath: string | undefined;
+    private recentXmlFiles: string[] = [];
 
     constructor(classificationManager: ClassificationManager) {
         this.classificationManager = classificationManager;
+    }
+
+    setCurrentXmlPath(xmlPath: string | undefined): void {
+        this.currentXmlPath = xmlPath;
+    }
+
+    setRecentXmlFiles(files: string[]): void {
+        this.recentXmlFiles = files;
     }
 
     setLineTracker(lineTracker: LineTracker): void {
@@ -113,6 +125,24 @@ export class CoverageTreeDataProvider implements vscode.TreeDataProvider<TreeIte
                     };
                 }
                 break;
+
+            case 'recent-xml':
+                treeItem.collapsibleState = vscode.TreeItemCollapsibleState.None;
+                if (element.isCurrent) {
+                    treeItem.iconPath = new vscode.ThemeIcon('check');
+                    treeItem.description = '(현재)';
+                } else {
+                    treeItem.iconPath = new vscode.ThemeIcon('history');
+                }
+                if (element.xmlPath) {
+                    treeItem.command = {
+                        command: 'coverage-highlighter.loadRecentXml',
+                        title: 'Load XML',
+                        arguments: [element.xmlPath]
+                    };
+                    treeItem.tooltip = element.xmlPath;
+                }
+                break;
         }
 
         return treeItem;
@@ -132,6 +162,8 @@ export class CoverageTreeDataProvider implements vscode.TreeDataProvider<TreeIte
                     return Promise.resolve(this.getCoverageSummaryItems());
                 } else if (element.label === '도구') {
                     return Promise.resolve(this.getActionItems());
+                } else if (element.label === '최근 XML' || element.label.startsWith('최근 XML')) {
+                    return Promise.resolve(this.getRecentXmlItems());
                 } else if (element.label.startsWith('미분류')) {
                     return Promise.resolve(this.getUnclassifiedFileItems());
                 }
@@ -155,12 +187,35 @@ export class CoverageTreeDataProvider implements vscode.TreeDataProvider<TreeIte
 
     private getRootItems(): TreeItemData[] {
         const unclassifiedCount = this.getUnclassifiedCount();
-        return [
-            { type: 'root', label: '도구' },
+        const items: TreeItemData[] = [
+            { type: 'root', label: '도구' }
+        ];
+
+        // 최근 XML 파일이 있으면 표시
+        if (this.recentXmlFiles.length > 0) {
+            items.push({ type: 'root', label: '최근 XML' });
+        }
+
+        items.push(
             { type: 'root', label: '커버리지 요약' },
             { type: 'root', label: `미분류 (${unclassifiedCount})` },
             { type: 'root', label: '분류된 항목' }
-        ];
+        );
+
+        return items;
+    }
+
+    private getRecentXmlItems(): TreeItemData[] {
+        if (this.recentXmlFiles.length === 0) {
+            return [{ type: 'action', label: 'XML을 로드하세요', command: 'coverage-highlighter.loadCoverage' }];
+        }
+
+        return this.recentXmlFiles.map(xmlPath => ({
+            type: 'recent-xml' as TreeItemType,
+            label: path.basename(xmlPath),
+            xmlPath,
+            isCurrent: xmlPath === this.currentXmlPath
+        }));
     }
 
     private getUnclassifiedCount(): number {

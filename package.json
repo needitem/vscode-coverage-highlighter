@@ -2,7 +2,7 @@
   "name": "coverage-highlighter",
   "displayName": "Coverage Highlighter",
   "description": "Coverage XML 파일을 사용하여 코드 커버리지를 시각화합니다",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "publisher": "your-publisher",
   "engines": {
     "vscode": "^1.74.0"
@@ -131,6 +131,10 @@
         "command": "coverage-highlighter.manageShortcuts",
         "title": "Coverage: 단축키 설정",
         "icon": "$(keyboard)"
+      },
+      {
+        "command": "coverage-highlighter.loadRecentXml",
+        "title": "Coverage: 최근 XML 로드"
       }
     ],
     "menus": {

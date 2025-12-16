@@ -29,10 +29,18 @@ function getCacheFilePath(): string | undefined {
 // 캐시 데이터 인터페이스
 interface CacheData {
     xmlPath?: string;
+    recentXmlFiles?: string[];  // 최근 로드한 XML 파일 목록
     lineOffsets: { [filePath: string]: { [originalLine: number]: number } };
     classifications: [string, any[]][];
     reasons: { id: string; label: string }[];
 }
+
+// 최근 XML 파일 목록 (최대 10개)
+let recentXmlFiles: string[] = [];
+const MAX_RECENT_FILES = 10;
+
+// 현재 로드된 XML 경로
+let currentXmlPath: string | undefined;
 
 // 캐시 저장
 async function saveCache(): Promise<void> {
@@ -53,6 +61,8 @@ async function saveCache(): Promise<void> {
     }
 
     const cache: CacheData = {
+        xmlPath: currentXmlPath,
+        recentXmlFiles,
         lineOffsets,
         classifications: Array.from(classificationManager.getAllClassifications().entries()),
         reasons: classificationManager.getReasons()
@@ -92,6 +102,12 @@ export function activate(context: vscode.ExtensionContext) {
     const cache = loadCache();
     if (cache) {
         lineTracker.importOffsets(cache.lineOffsets);
+        if (cache.recentXmlFiles) {
+            recentXmlFiles = cache.recentXmlFiles.filter(f => fs.existsSync(f));
+        }
+        if (cache.xmlPath && fs.existsSync(cache.xmlPath)) {
+            currentXmlPath = cache.xmlPath;
+        }
     }
 
     // Create status bar item
@@ -206,6 +222,11 @@ export function activate(context: vscode.ExtensionContext) {
         await manageShortcuts();
     });
 
+    // 최근 XML 직접 로드
+    const loadRecentXmlCommand = vscode.commands.registerCommand('coverage-highlighter.loadRecentXml', async (xmlPath: string) => {
+        await loadXmlFile(xmlPath);
+    });
+
     context.subscriptions.push(
         loadCommand, clearCommand, summaryCommand,
         classifyLineCommand, classifySelectionCommand,
@@ -214,8 +235,14 @@ export function activate(context: vscode.ExtensionContext) {
         quickClassifyDocumentCommand, quickClassifyCommentCommand, quickClassifyCoverCommand,
         quickSlot4Command, quickSlot5Command, quickSlot6Command,
         quickSlot7Command, quickSlot8Command, quickSlot9Command,
-        classifyFromTreeCommand, manageShortcutsCommand
+        classifyFromTreeCommand, manageShortcutsCommand, loadRecentXmlCommand
     );
+
+    // TreeView에 최근 파일 목록 전달
+    treeDataProvider.setRecentXmlFiles(recentXmlFiles);
+    if (currentXmlPath) {
+        treeDataProvider.setCurrentXmlPath(currentXmlPath);
+    }
 
     // Apply highlights when editor changes
     context.subscriptions.push(
@@ -295,24 +322,96 @@ function debouncedSaveCache(): void {
     }, 2000);
 }
 
-async function loadCoverage() {
-    // Select XML file
-    const xmlFiles = await vscode.window.showOpenDialog({
-        canSelectMany: false,
-        filters: {
-            'Coverage XML': ['xml']
-        },
-        title: 'Select Coverage XML File'
-    });
+// XML 파일을 최근 목록에 추가
+function addToRecentFiles(xmlPath: string): void {
+    // 이미 있으면 제거 후 맨 앞에 추가
+    recentXmlFiles = recentXmlFiles.filter(f => f !== xmlPath);
+    recentXmlFiles.unshift(xmlPath);
+    // 최대 개수 유지
+    if (recentXmlFiles.length > MAX_RECENT_FILES) {
+        recentXmlFiles = recentXmlFiles.slice(0, MAX_RECENT_FILES);
+    }
+}
 
-    if (!xmlFiles || xmlFiles.length === 0) {
+// 최근 파일 목록 가져오기
+function getRecentXmlFiles(): { label: string; description: string; path: string }[] {
+    return recentXmlFiles
+        .filter(f => fs.existsSync(f))
+        .map(f => ({
+            label: path.basename(f),
+            description: path.dirname(f),
+            path: f
+        }));
+}
+
+async function loadCoverage() {
+    // 최근 파일이 있으면 선택 옵션 제공
+    const recentFiles = getRecentXmlFiles();
+
+    let xmlPath: string | undefined;
+
+    if (recentFiles.length > 0) {
+        const items: (vscode.QuickPickItem & { path?: string })[] = [
+            { label: '$(folder-opened) 새 파일 선택...', description: '파일 탐색기에서 선택' },
+            { label: '', kind: vscode.QuickPickItemKind.Separator },
+            ...recentFiles.map(f => ({
+                label: `$(history) ${f.label}`,
+                description: f.description,
+                path: f.path
+            }))
+        ];
+
+        // 현재 로드된 파일 표시
+        if (currentXmlPath) {
+            const currentIdx = items.findIndex(i => i.path === currentXmlPath);
+            if (currentIdx >= 0) {
+                items[currentIdx].label = items[currentIdx].label.replace('$(history)', '$(check)');
+                items[currentIdx].description += ' (현재)';
+            }
+        }
+
+        const choice = await vscode.window.showQuickPick(items, {
+            placeHolder: 'Coverage XML 파일 선택',
+            title: 'Coverage XML 로드'
+        });
+
+        if (!choice) return;
+
+        if (choice.path) {
+            xmlPath = choice.path;
+        } else {
+            // 새 파일 선택
+            const files = await vscode.window.showOpenDialog({
+                canSelectMany: false,
+                filters: { 'Coverage XML': ['xml'] },
+                title: 'Select Coverage XML File'
+            });
+            if (!files || files.length === 0) return;
+            xmlPath = files[0].fsPath;
+        }
+    } else {
+        // 최근 파일 없으면 바로 파일 선택
+        const files = await vscode.window.showOpenDialog({
+            canSelectMany: false,
+            filters: { 'Coverage XML': ['xml'] },
+            title: 'Select Coverage XML File'
+        });
+        if (!files || files.length === 0) return;
+        xmlPath = files[0].fsPath;
+    }
+
+    await loadXmlFile(xmlPath);
+}
+
+// XML 파일 직접 로드
+async function loadXmlFile(xmlPath: string) {
+    if (!fs.existsSync(xmlPath)) {
+        vscode.window.showErrorMessage(`파일을 찾을 수 없습니다: ${xmlPath}`);
         return;
     }
 
-    const xmlPath = xmlFiles[0].fsPath;
-
     try {
-        vscode.window.withProgress({
+        await vscode.window.withProgress({
             location: vscode.ProgressLocation.Notification,
             title: "Loading coverage data...",
             cancellable: false
@@ -323,6 +422,8 @@ async function loadCoverage() {
             filePathMapping.clear();
 
             coverageData = parseCoverageXml(xmlPath);
+            currentXmlPath = xmlPath;
+            addToRecentFiles(xmlPath);
 
             progress.report({ increment: 50, message: "Applying highlights..." });
 
@@ -334,6 +435,11 @@ async function loadCoverage() {
 
             // TreeView 업데이트
             treeDataProvider.setCoverageData(coverageData);
+            treeDataProvider.setCurrentXmlPath(currentXmlPath);
+            treeDataProvider.setRecentXmlFiles(recentXmlFiles);
+
+            // 캐시 저장
+            await saveCache();
 
             progress.report({ increment: 100, message: "Done!" });
 
