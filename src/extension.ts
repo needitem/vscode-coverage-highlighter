@@ -96,10 +96,15 @@ export function activate(context: vscode.ExtensionContext) {
     // highlighter에 classificationManager 연결
     highlighter.setClassificationManager(classificationManager);
 
-    // TreeView 등록
+    // TreeView 등록 - 다중 선택 활성화
     treeDataProvider = new CoverageTreeDataProvider(classificationManager);
     treeDataProvider.setLineTracker(lineTracker);
-    vscode.window.registerTreeDataProvider('coverageExplorer', treeDataProvider);
+    const treeView = vscode.window.createTreeView('coverageExplorer', {
+        treeDataProvider: treeDataProvider,
+        canSelectMany: true  // Shift+클릭, Ctrl+클릭으로 다중 선택 가능
+    });
+    treeDataProvider.setTreeView(treeView);
+    context.subscriptions.push(treeView);
 
     // 캐시 로드
     const cache = loadCache();
@@ -241,11 +246,6 @@ export function activate(context: vscode.ExtensionContext) {
         }
     });
 
-    // 최근 XML 직접 로드
-    const loadRecentXmlCommand = vscode.commands.registerCommand('coverage-highlighter.loadRecentXml', async (xmlPath: string) => {
-        await loadXmlFile(xmlPath);
-    });
-
     // 분류된 항목 하이라이트 토글
     const toggleHideClassifiedCommand = vscode.commands.registerCommand('coverage-highlighter.toggleHideClassified', () => {
         const current = highlighter.getHideClassified();
@@ -256,6 +256,221 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.window.showInformationMessage(`분류된 항목 숨기기: ${!current ? 'ON' : 'OFF'}`);
     });
 
+    // TreeView에서 사유와 함께 분류 (classify-option 클릭 시)
+    const classifyFromTreeWithReasonCommand = vscode.commands.registerCommand('coverage-highlighter.classifyFromTreeWithReason',
+        async (filePath: string, line: number, category: 'document' | 'comment-planned' | 'cover-planned', reason: string, lines?: number[]) => {
+            const targetLines = lines && lines.length > 0 ? lines : [line];
+            
+            let finalReason = reason;
+            if (reason === '__new__') {
+                const newReason = await vscode.window.showInputBox({
+                    prompt: '새 사유를 입력하세요',
+                    placeHolder: '예: UI 관련 코드'
+                });
+                if (!newReason) return;
+                await classificationManager.addReason(newReason);
+                finalReason = newReason;
+            }
+
+            await classificationManager.classifyLines(filePath, targetLines, category, finalReason);
+            
+            for (const l of targetLines) {
+                treeDataProvider.hideClassifiedLine(filePath, l);
+            }
+            
+            // 분류된 항목 숨기기 모드일 때 하이라이트 즉시 반영
+            applyHighlightsToAllEditors();
+            
+            await saveCache();
+            
+            const categoryLabel = category === 'document' ? '문서' : category === 'comment-planned' ? '주석예정' : '태울예정';
+            const msg = finalReason ? `${targetLines.length}개 라인 → ${categoryLabel} (${finalReason})` : `${targetLines.length}개 라인 → ${categoryLabel}`;
+            vscode.window.showInformationMessage(msg);
+        }
+    );
+
+    // 일괄 분류 (다중 선택된 미분류 항목)
+    const bulkClassifyCommand = vscode.commands.registerCommand('coverage-highlighter.bulkClassify', async (...args: any[]) => {
+        const selectedItems = treeDataProvider.getTreeView()?.selection || [];
+        const unclassifiedItems = selectedItems.filter((item: any) => item.type === 'unclassified-line' && item.filePath && item.lines);
+        
+        if (unclassifiedItems.length === 0) {
+            vscode.window.showWarningMessage('분류할 항목을 선택하세요.');
+            return;
+        }
+
+        // 카테고리 선택
+        const categoryChoice = await vscode.window.showQuickPick([
+            { label: '문서', value: 'document' as const },
+            { label: '주석 예정', value: 'comment-planned' as const },
+            { label: '태울 예정', value: 'cover-planned' as const }
+        ], { placeHolder: '분류 카테고리를 선택하세요' });
+
+        if (!categoryChoice) return;
+
+        let reasonLabel = '';
+        if (categoryChoice.value === 'document') {
+            const reasons = classificationManager.getReasons();
+            const reasonItems = [
+                ...reasons.map(r => ({ label: r.label, value: r.label })),
+                { label: '$(add) 새 사유 추가...', value: '__new__' }
+            ];
+
+            const reasonChoice = await vscode.window.showQuickPick(reasonItems, { placeHolder: '사유를 선택하세요' });
+            if (!reasonChoice) return;
+
+            if (reasonChoice.value === '__new__') {
+                const newReason = await vscode.window.showInputBox({ prompt: '새 사유를 입력하세요' });
+                if (!newReason) return;
+                await classificationManager.addReason(newReason);
+                reasonLabel = newReason;
+            } else {
+                reasonLabel = reasonChoice.value;
+            }
+        }
+
+        let totalLines = 0;
+        for (const item of unclassifiedItems) {
+            const lines = item.lines || [item.line];
+            await classificationManager.classifyLines(item.filePath, lines, categoryChoice.value, reasonLabel);
+            totalLines += lines.length;
+        }
+
+        treeDataProvider.refresh();
+        applyHighlightsToAllEditors();
+        await saveCache();
+
+        const categoryLabel = categoryChoice.value === 'document' ? '문서' : categoryChoice.value === 'comment-planned' ? '주석예정' : '태울예정';
+        vscode.window.showInformationMessage(`${totalLines}개 라인 → ${categoryLabel}`);
+    });
+
+    // 일괄 삭제 (다중 선택된 분류 항목)
+    const bulkRemoveClassificationCommand = vscode.commands.registerCommand('coverage-highlighter.bulkRemoveClassification', async () => {
+        const selectedItems = treeDataProvider.getTreeView()?.selection || [];
+        const classifiedItems = selectedItems.filter((item: any) => item.type === 'line' && item.filePath && item.line && item.category);
+        
+        if (classifiedItems.length === 0) {
+            vscode.window.showWarningMessage('삭제할 분류 항목을 선택하세요.');
+            return;
+        }
+
+        const confirm = await vscode.window.showWarningMessage(
+            `${classifiedItems.length}개 항목의 분류를 삭제하시겠습니까?`,
+            '삭제', '취소'
+        );
+        if (confirm !== '삭제') return;
+
+        for (const item of classifiedItems) {
+            await classificationManager.removeClassification(item.filePath, item.line);
+        }
+
+        treeDataProvider.refresh();
+        applyHighlightsToAllEditors();
+        await saveCache();
+        vscode.window.showInformationMessage(`${classifiedItems.length}개 항목 분류 삭제됨`);
+    });
+
+    // 일괄 수정 (다중 선택된 분류 항목)
+    const bulkEditClassificationCommand = vscode.commands.registerCommand('coverage-highlighter.bulkEditClassification', async () => {
+        const selectedItems = treeDataProvider.getTreeView()?.selection || [];
+        const classifiedItems = selectedItems.filter((item: any) => item.type === 'line' && item.filePath && item.line && item.category);
+        
+        if (classifiedItems.length === 0) {
+            vscode.window.showWarningMessage('수정할 분류 항목을 선택하세요.');
+            return;
+        }
+
+        // 새 카테고리 선택
+        const categoryChoice = await vscode.window.showQuickPick([
+            { label: '문서', value: 'document' as const },
+            { label: '주석 예정', value: 'comment-planned' as const },
+            { label: '태울 예정', value: 'cover-planned' as const }
+        ], { placeHolder: '새 카테고리를 선택하세요' });
+
+        if (!categoryChoice) return;
+
+        let reasonLabel = '';
+        if (categoryChoice.value === 'document') {
+            const reasons = classificationManager.getReasons();
+            const reasonItems = [
+                ...reasons.map(r => ({ label: r.label, value: r.label })),
+                { label: '$(add) 새 사유 추가...', value: '__new__' }
+            ];
+
+            const reasonChoice = await vscode.window.showQuickPick(reasonItems, { placeHolder: '사유를 선택하세요' });
+            if (!reasonChoice) return;
+
+            if (reasonChoice.value === '__new__') {
+                const newReason = await vscode.window.showInputBox({ prompt: '새 사유를 입력하세요' });
+                if (!newReason) return;
+                await classificationManager.addReason(newReason);
+                reasonLabel = newReason;
+            } else {
+                reasonLabel = reasonChoice.value;
+            }
+        }
+
+        // 기존 분류 삭제 후 새로 분류
+        for (const item of classifiedItems) {
+            await classificationManager.removeClassification(item.filePath, item.line);
+            await classificationManager.classifyLines(item.filePath, [item.line], categoryChoice.value, reasonLabel);
+        }
+
+        treeDataProvider.refresh();
+        applyHighlightsToAllEditors();
+        await saveCache();
+
+        const categoryLabel = categoryChoice.value === 'document' ? '문서' : categoryChoice.value === 'comment-planned' ? '주석예정' : '태울예정';
+        vscode.window.showInformationMessage(`${classifiedItems.length}개 항목 → ${categoryLabel}`);
+    });
+
+    // 단일 분류 수정
+    const editClassificationCommand = vscode.commands.registerCommand('coverage-highlighter.editClassification', async (item: any) => {
+        if (!item || !item.filePath || !item.line) {
+            vscode.window.showWarningMessage('수정할 항목을 선택하세요.');
+            return;
+        }
+
+        const categoryChoice = await vscode.window.showQuickPick([
+            { label: '문서', value: 'document' as const },
+            { label: '주석 예정', value: 'comment-planned' as const },
+            { label: '태울 예정', value: 'cover-planned' as const }
+        ], { placeHolder: '새 카테고리를 선택하세요' });
+
+        if (!categoryChoice) return;
+
+        let reasonLabel = '';
+        if (categoryChoice.value === 'document') {
+            const reasons = classificationManager.getReasons();
+            const reasonItems = [
+                ...reasons.map(r => ({ label: r.label, value: r.label })),
+                { label: '$(add) 새 사유 추가...', value: '__new__' }
+            ];
+
+            const reasonChoice = await vscode.window.showQuickPick(reasonItems, { placeHolder: '사유를 선택하세요' });
+            if (!reasonChoice) return;
+
+            if (reasonChoice.value === '__new__') {
+                const newReason = await vscode.window.showInputBox({ prompt: '새 사유를 입력하세요' });
+                if (!newReason) return;
+                await classificationManager.addReason(newReason);
+                reasonLabel = newReason;
+            } else {
+                reasonLabel = reasonChoice.value;
+            }
+        }
+
+        await classificationManager.removeClassification(item.filePath, item.line);
+        await classificationManager.classifyLines(item.filePath, [item.line], categoryChoice.value, reasonLabel);
+
+        treeDataProvider.refresh();
+        applyHighlightsToAllEditors();
+        await saveCache();
+
+        const categoryLabel = categoryChoice.value === 'document' ? '문서' : categoryChoice.value === 'comment-planned' ? '주석예정' : '태울예정';
+        vscode.window.showInformationMessage(`Line ${item.line} → ${categoryLabel}`);
+    });
+
     context.subscriptions.push(
         loadCommand, clearCommand, summaryCommand,
         classifyLineCommand, classifySelectionCommand,
@@ -264,16 +479,11 @@ export function activate(context: vscode.ExtensionContext) {
         quickClassifyDocumentCommand, quickClassifyCommentCommand, quickClassifyCoverCommand,
         quickSlot4Command, quickSlot5Command, quickSlot6Command,
         quickSlot7Command, quickSlot8Command, quickSlot9Command,
-        classifyFromTreeCommand, loadRecentXmlCommand,
+        classifyFromTreeCommand,
         quickClassifyFromTreeDocumentCommand, quickClassifyFromTreeCommentCommand, quickClassifyFromTreeCoverCommand,
-        toggleHideClassifiedCommand
+        toggleHideClassifiedCommand, classifyFromTreeWithReasonCommand,
+        bulkClassifyCommand, bulkRemoveClassificationCommand, bulkEditClassificationCommand, editClassificationCommand
     );
-
-    // TreeView에 최근 파일 목록 전달
-    treeDataProvider.setRecentXmlFiles(recentXmlFiles);
-    if (currentXmlPath) {
-        treeDataProvider.setCurrentXmlPath(currentXmlPath);
-    }
 
     // Apply highlights when editor changes
     context.subscriptions.push(
@@ -466,8 +676,6 @@ async function loadXmlFile(xmlPath: string) {
 
             // TreeView 업데이트
             treeDataProvider.setCoverageData(coverageData);
-            treeDataProvider.setCurrentXmlPath(currentXmlPath);
-            treeDataProvider.setRecentXmlFiles(recentXmlFiles);
 
             // 캐시 저장
             await saveCache();
@@ -735,7 +943,8 @@ async function quickClassifyFromTreeWithCategory(filePath: string, startLine: nu
     const msg = reasonLabel ? `Line ${startLine} → ${categoryLabel} (${reasonLabel})` : `Line ${startLine} → ${categoryLabel}`;
     vscode.window.showInformationMessage(msg);
 
-    treeDataProvider.refresh();
+    treeDataProvider.hideClassifiedLine(filePath, startLine);
+    applyHighlightsToAllEditors();
     await saveCache();
 }
 
@@ -748,7 +957,8 @@ async function quickClassifyFromTreeDirect(filePath: string, startLine: number, 
     const categoryLabel = category === 'document' ? '문서' : category === 'comment-planned' ? '주석예정' : '태울예정';
     vscode.window.showInformationMessage(`Line ${startLine} → ${categoryLabel}`);
 
-    treeDataProvider.refresh();
+    treeDataProvider.hideClassifiedLine(filePath, startLine);
+    applyHighlightsToAllEditors();
     await saveCache();
 }
 
