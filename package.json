@@ -2,7 +2,7 @@
   "name": "coverage-highlighter",
   "displayName": "Coverage Highlighter",
   "description": "Coverage XML 파일을 사용하여 코드 커버리지를 시각화합니다",
-  "version": "1.1.0",
+  "version": "1.3.0",
   "publisher": "your-publisher",
   "engines": {
     "vscode": "^1.74.0"
@@ -15,20 +15,101 @@
   ],
   "main": "./dist/extension.js",
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "coverage-highlighter",
+          "title": "Coverage Highlighter",
+          "icon": "$(beaker)"
+        }
+      ]
+    },
+    "views": {
+      "coverage-highlighter": [
+        {
+          "id": "coverageExplorer",
+          "name": "Coverage Explorer"
+        }
+      ]
+    },
     "commands": [
       {
         "command": "coverage-highlighter.loadCoverage",
-        "title": "Coverage: Load Coverage XML"
+        "title": "Coverage: Load Coverage XML",
+        "icon": "$(folder-opened)"
       },
       {
         "command": "coverage-highlighter.clearCoverage",
-        "title": "Coverage: Clear Highlights"
+        "title": "Coverage: Clear Highlights",
+        "icon": "$(clear-all)"
       },
       {
         "command": "coverage-highlighter.showSummary",
         "title": "Coverage: Show Summary"
+      },
+      {
+        "command": "coverage-highlighter.classifyLine",
+        "title": "Coverage: Classify Uncovered Line"
+      },
+      {
+        "command": "coverage-highlighter.classifySelection",
+        "title": "Coverage: Classify Selected Lines"
+      },
+      {
+        "command": "coverage-highlighter.manageReasons",
+        "title": "Coverage: Manage Reasons",
+        "icon": "$(gear)"
+      },
+      {
+        "command": "coverage-highlighter.generateReport",
+        "title": "Coverage: Generate Classification Report",
+        "icon": "$(export)"
+      },
+      {
+        "command": "coverage-highlighter.showClassifications",
+        "title": "Coverage: Show Classifications"
+      },
+      {
+        "command": "coverage-highlighter.refreshTree",
+        "title": "Refresh",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "coverage-highlighter.goToLine",
+        "title": "Go to Line"
       }
     ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "coverage-highlighter.classifyLine",
+          "when": "editorTextFocus",
+          "group": "coverage@1"
+        },
+        {
+          "command": "coverage-highlighter.classifySelection",
+          "when": "editorTextFocus && editorHasSelection",
+          "group": "coverage@2"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "coverage-highlighter.loadCoverage",
+          "when": "view == coverageExplorer",
+          "group": "navigation@1"
+        },
+        {
+          "command": "coverage-highlighter.refreshTree",
+          "when": "view == coverageExplorer",
+          "group": "navigation@2"
+        },
+        {
+          "command": "coverage-highlighter.generateReport",
+          "when": "view == coverageExplorer",
+          "group": "navigation@3"
+        }
+      ]
+    },
     "configuration": {
       "title": "Coverage Highlighter",
       "properties": {

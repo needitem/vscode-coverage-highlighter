@@ -1,22 +1,98 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
+import * as fs from 'fs';
 import { parseCoverageXml, findMatchingCoverage, CoverageData, FileCoverage, normalizePath } from './coverageParser';
 import { CoverageHighlighter } from './highlighter';
 import { LineTracker } from './lineTracker';
+import { ClassificationManager } from './classificationManager';
+import { CoverageTreeDataProvider } from './coverageTreeView';
 
 let coverageData: CoverageData | undefined;
 let highlighter: CoverageHighlighter;
 let lineTracker: LineTracker;
+let classificationManager: ClassificationManager;
+let treeDataProvider: CoverageTreeDataProvider;
 let statusBarItem: vscode.StatusBarItem;
 
 // 파일 경로 매핑 캐시 (로컬 경로 -> coverage 파일 경로)
 const filePathMapping: Map<string, string> = new Map();
+
+// 워크스페이스 캐시 파일 경로
+function getCacheFilePath(): string | undefined {
+    const workspaceFolders = vscode.workspace.workspaceFolders;
+    if (!workspaceFolders || workspaceFolders.length === 0) {
+        return undefined;
+    }
+    return path.join(workspaceFolders[0].uri.fsPath, '.vscode', 'coverage-cache.json');
+}
+
+// 캐시 데이터 인터페이스
+interface CacheData {
+    xmlPath?: string;
+    lineOffsets: { [filePath: string]: { [originalLine: number]: number } };
+    classifications: [string, any[]][];
+    reasons: { id: string; label: string }[];
+}
+
+// 캐시 저장
+async function saveCache(): Promise<void> {
+    const cachePath = getCacheFilePath();
+    if (!cachePath) return;
+
+    const cacheDir = path.dirname(cachePath);
+    if (!fs.existsSync(cacheDir)) {
+        fs.mkdirSync(cacheDir, { recursive: true });
+    }
+
+    const lineOffsets: { [filePath: string]: { [originalLine: number]: number } } = {};
+
+    // LineTracker에서 오프셋 정보 추출
+    const trackerData = lineTracker.exportOffsets();
+    for (const [filePath, offsets] of trackerData) {
+        lineOffsets[filePath] = Object.fromEntries(offsets);
+    }
+
+    const cache: CacheData = {
+        lineOffsets,
+        classifications: Array.from(classificationManager.getAllClassifications().entries()),
+        reasons: classificationManager.getReasons()
+    };
+
+    fs.writeFileSync(cachePath, JSON.stringify(cache, null, 2), 'utf-8');
+}
+
+// 캐시 로드
+function loadCache(): CacheData | undefined {
+    const cachePath = getCacheFilePath();
+    if (!cachePath || !fs.existsSync(cachePath)) {
+        return undefined;
+    }
+
+    try {
+        const content = fs.readFileSync(cachePath, 'utf-8');
+        return JSON.parse(content) as CacheData;
+    } catch {
+        return undefined;
+    }
+}
 
 export function activate(context: vscode.ExtensionContext) {
     console.log('Coverage Highlighter is now active!');
 
     highlighter = new CoverageHighlighter();
     lineTracker = new LineTracker();
+    classificationManager = new ClassificationManager(context);
+
+    // TreeView 등록
+    treeDataProvider = new CoverageTreeDataProvider(classificationManager);
+    treeDataProvider.setLineTracker(lineTracker);
+    vscode.window.registerTreeDataProvider('coverageExplorer', treeDataProvider);
+
+    // 캐시 로드
+    const cache = loadCache();
+    if (cache) {
+        lineTracker.importOffsets(cache.lineOffsets);
+    }
 
     // Create status bar item
     statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
@@ -28,6 +104,18 @@ export function activate(context: vscode.ExtensionContext) {
         await loadCoverage();
     });
 
+    const refreshTreeCommand = vscode.commands.registerCommand('coverage-highlighter.refreshTree', () => {
+        treeDataProvider.refresh();
+    });
+
+    const goToLineCommand = vscode.commands.registerCommand('coverage-highlighter.goToLine', async (filePath: string, line: number) => {
+        const doc = await vscode.workspace.openTextDocument(filePath);
+        const editor = await vscode.window.showTextDocument(doc);
+        const position = new vscode.Position(line - 1, 0);
+        editor.selection = new vscode.Selection(position, position);
+        editor.revealRange(new vscode.Range(position, position), vscode.TextEditorRevealType.InCenter);
+    });
+
     const clearCommand = vscode.commands.registerCommand('coverage-highlighter.clearCoverage', () => {
         clearCoverage();
     });
@@ -36,7 +124,32 @@ export function activate(context: vscode.ExtensionContext) {
         showSummary();
     });
 
-    context.subscriptions.push(loadCommand, clearCommand, summaryCommand);
+    const classifyLineCommand = vscode.commands.registerCommand('coverage-highlighter.classifyLine', async () => {
+        await classifyCurrentLine();
+    });
+
+    const classifySelectionCommand = vscode.commands.registerCommand('coverage-highlighter.classifySelection', async () => {
+        await classifySelectedLines();
+    });
+
+    const manageReasonsCommand = vscode.commands.registerCommand('coverage-highlighter.manageReasons', async () => {
+        await manageReasons();
+    });
+
+    const generateReportCommand = vscode.commands.registerCommand('coverage-highlighter.generateReport', async () => {
+        await generateReport();
+    });
+
+    const showClassificationsCommand = vscode.commands.registerCommand('coverage-highlighter.showClassifications', async () => {
+        await showClassifications();
+    });
+
+    context.subscriptions.push(
+        loadCommand, clearCommand, summaryCommand,
+        classifyLineCommand, classifySelectionCommand,
+        manageReasonsCommand, generateReportCommand, showClassificationsCommand,
+        refreshTreeCommand, goToLineCommand
+    );
 
     // Apply highlights when editor changes
     context.subscriptions.push(
@@ -77,6 +190,9 @@ export function activate(context: vscode.ExtensionContext) {
                 if (editor) {
                     applyHighlightsToEditorWithTracker(editor);
                 }
+
+                // 캐시 저장 (디바운스)
+                debouncedSaveCache();
             }
         })
     );
@@ -97,8 +213,20 @@ export function activate(context: vscode.ExtensionContext) {
         dispose: () => {
             highlighter.dispose();
             lineTracker.clear();
+            saveCache();
         }
     });
+}
+
+// 디바운스된 캐시 저장
+let saveTimeout: NodeJS.Timeout | undefined;
+function debouncedSaveCache(): void {
+    if (saveTimeout) {
+        clearTimeout(saveTimeout);
+    }
+    saveTimeout = setTimeout(() => {
+        saveCache();
+    }, 2000);
 }
 
 async function loadCoverage() {
@@ -117,14 +245,6 @@ async function loadCoverage() {
 
     const xmlPath = xmlFiles[0].fsPath;
 
-    // Select project folder (optional)
-    const projectFolder = await vscode.window.showOpenDialog({
-        canSelectFiles: false,
-        canSelectFolders: true,
-        canSelectMany: false,
-        title: 'Select Project Folder (source files location)'
-    });
-
     try {
         vscode.window.withProgress({
             location: vscode.ProgressLocation.Notification,
@@ -133,8 +253,7 @@ async function loadCoverage() {
         }, async (progress) => {
             progress.report({ increment: 0, message: "Parsing XML..." });
 
-            // 이전 데이터 초기화
-            lineTracker.clear();
+            // 이전 데이터 초기화 (캐시된 오프셋은 유지)
             filePathMapping.clear();
 
             coverageData = parseCoverageXml(xmlPath);
@@ -146,6 +265,9 @@ async function loadCoverage() {
 
             // Apply highlights to all visible editors
             applyHighlightsToAllEditors();
+
+            // TreeView 업데이트
+            treeDataProvider.setCoverageData(coverageData);
 
             progress.report({ increment: 100, message: "Done!" });
 
@@ -167,6 +289,234 @@ function clearCoverage() {
     highlighter.clearAllHighlights();
     statusBarItem.hide();
     vscode.window.showInformationMessage('Coverage highlights cleared');
+}
+
+async function classifyCurrentLine() {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) {
+        vscode.window.showWarningMessage('No active editor');
+        return;
+    }
+
+    const line = editor.selection.active.line + 1; // 1-based
+    const filePath = editor.document.uri.fsPath;
+
+    // 연속된 uncovered 블록 자동 선택
+    const blockLines = lineTracker.getUncoveredBlock(filePath, line);
+
+    await classifyLines(filePath, blockLines);
+}
+
+async function classifySelectedLines() {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) {
+        vscode.window.showWarningMessage('No active editor');
+        return;
+    }
+
+    const selection = editor.selection;
+    const startLine = selection.start.line + 1;
+    const endLine = selection.end.line + 1;
+    const filePath = editor.document.uri.fsPath;
+
+    // 선택된 범위의 모든 라인에 대해 연속 블록 확장
+    const allBlockLines = new Set<number>();
+    for (let i = startLine; i <= endLine; i++) {
+        const blockLines = lineTracker.getUncoveredBlock(filePath, i);
+        blockLines.forEach(line => allBlockLines.add(line));
+    }
+
+    const sortedLines = Array.from(allBlockLines).sort((a, b) => a - b);
+    await classifyLines(filePath, sortedLines);
+}
+
+async function classifyLines(filePath: string, lines: number[]) {
+    // 카테고리 선택
+    const categoryChoice = await vscode.window.showQuickPick([
+        { label: '문서', value: 'document' as const, description: '문서화 대상 (보고서에 포함)' },
+        { label: '주석 예정', value: 'comment-planned' as const, description: '주석 처리 예정' },
+        { label: '태울 예정', value: 'cover-planned' as const, description: '커버리지 달성 예정' }
+    ], {
+        placeHolder: '분류 카테고리를 선택하세요'
+    });
+
+    if (!categoryChoice) return;
+
+    let reasonLabel: string;
+
+    // 문서 카테고리만 사유 선택 필요
+    if (categoryChoice.value === 'document') {
+        const reasons = classificationManager.getReasons();
+        const reasonItems = [
+            ...reasons.map(r => ({ label: r.label, value: r.id })),
+            { label: '$(add) 새 사유 추가...', value: '__new__' }
+        ];
+
+        const reasonChoice = await vscode.window.showQuickPick(reasonItems, {
+            placeHolder: '사유를 선택하세요'
+        });
+
+        if (!reasonChoice) return;
+
+        if (reasonChoice.value === '__new__') {
+            const newReason = await vscode.window.showInputBox({
+                prompt: '새 사유를 입력하세요',
+                placeHolder: '예: UI 관련 코드'
+            });
+            if (!newReason) return;
+
+            await classificationManager.addReason(newReason);
+            reasonLabel = newReason;
+        } else {
+            reasonLabel = reasonChoice.label;
+        }
+    } else {
+        // 주석 예정, 태울 예정은 사유 없이 바로 분류
+        reasonLabel = '';
+    }
+
+    // 분류 저장
+    await classificationManager.classifyLines(filePath, lines, categoryChoice.value, reasonLabel);
+
+    const message = reasonLabel
+        ? `${lines.length}개 라인이 "${categoryChoice.label} - ${reasonLabel}"로 분류되었습니다.`
+        : `${lines.length}개 라인이 "${categoryChoice.label}"로 분류되었습니다.`;
+    vscode.window.showInformationMessage(message);
+
+    // TreeView 갱신
+    treeDataProvider.refresh();
+
+    // 캐시 저장
+    await saveCache();
+}
+
+async function manageReasons() {
+    const reasons = classificationManager.getReasons();
+
+    const items = [
+        { label: '$(add) 새 사유 추가', value: '__add__' },
+        ...reasons.map(r => ({ label: `$(trash) ${r.label}`, value: r.id, description: '삭제하려면 선택' }))
+    ];
+
+    const choice = await vscode.window.showQuickPick(items, {
+        placeHolder: '사유 관리'
+    });
+
+    if (!choice) return;
+
+    if (choice.value === '__add__') {
+        const newReason = await vscode.window.showInputBox({
+            prompt: '새 사유를 입력하세요',
+            placeHolder: '예: UI 관련 코드'
+        });
+        if (newReason) {
+            await classificationManager.addReason(newReason);
+            vscode.window.showInformationMessage(`사유 "${newReason}"이(가) 추가되었습니다.`);
+        }
+    } else {
+        const confirm = await vscode.window.showWarningMessage(
+            `"${choice.label.replace('$(trash) ', '')}" 사유를 삭제하시겠습니까?`,
+            '삭제', '취소'
+        );
+        if (confirm === '삭제') {
+            await classificationManager.removeReason(choice.value);
+            vscode.window.showInformationMessage('사유가 삭제되었습니다.');
+        }
+    }
+}
+
+async function generateReport() {
+    const reportType = await vscode.window.showQuickPick([
+        { label: '문서용 보고서', value: 'document' },
+        { label: '전체 보고서', value: 'full' }
+    ], {
+        placeHolder: '보고서 유형을 선택하세요'
+    });
+
+    if (!reportType) return;
+
+    let report: string;
+    if (reportType.value === 'document') {
+        report = classificationManager.generateDocumentReport();
+    } else {
+        report = classificationManager.generateFullReport();
+    }
+
+    // 새 문서에 보고서 표시
+    const doc = await vscode.workspace.openTextDocument({
+        content: report,
+        language: 'markdown'
+    });
+    await vscode.window.showTextDocument(doc);
+}
+
+async function showClassifications() {
+    const panel = vscode.window.createWebviewPanel(
+        'coverageClassifications',
+        'Coverage Classifications',
+        vscode.ViewColumn.Beside,
+        { enableScripts: true }
+    );
+
+    const classifications = classificationManager.getAllClassifications();
+
+    let tableHtml = '';
+    for (const [key, items] of classifications.entries()) {
+        const [category, reason] = key.split(':');
+        const categoryLabel = category === 'document' ? '문서' : category === 'comment-planned' ? '주석 예정' : '태울 예정';
+
+        // 파일별 그룹화
+        const byFile = new Map<string, number[]>();
+        for (const item of items) {
+            if (!byFile.has(item.fileName)) {
+                byFile.set(item.fileName, []);
+            }
+            byFile.get(item.fileName)!.push(item.line);
+        }
+
+        tableHtml += `<h3>${categoryLabel} - ${reason}</h3>`;
+        tableHtml += `<table>
+            <thead><tr><th>번호</th><th>파일명</th><th>코드위치</th><th>비고</th></tr></thead>
+            <tbody>`;
+
+        let index = 1;
+        for (const [fileName, lines] of byFile.entries()) {
+            lines.sort((a, b) => a - b);
+            tableHtml += `<tr>
+                <td>${index}</td>
+                <td>${fileName}</td>
+                <td>${lines.join(' ')}</td>
+                <td></td>
+            </tr>`;
+            index++;
+        }
+
+        tableHtml += `</tbody></table>`;
+    }
+
+    if (tableHtml === '') {
+        tableHtml = '<p>분류된 항목이 없습니다.</p>';
+    }
+
+    panel.webview.html = `
+        <!DOCTYPE html>
+        <html lang="ko">
+        <head>
+            <meta charset="UTF-8">
+            <style>
+                body { font-family: var(--vscode-font-family); padding: 20px; color: var(--vscode-foreground); background: var(--vscode-editor-background); }
+                table { width: 100%; border-collapse: collapse; margin: 10px 0 20px; }
+                th, td { padding: 8px; text-align: left; border: 1px solid var(--vscode-panel-border); }
+                th { background: var(--vscode-editor-inactiveSelectionBackground); }
+                h3 { margin-top: 20px; color: var(--vscode-textLink-foreground); }
+            </style>
+        </head>
+        <body>
+            <h1>분류된 미달성 코드</h1>
+            ${tableHtml}
+        </body>
+        </html>
+    `;
 }
 
 function showSummary() {
@@ -333,17 +683,20 @@ function applyHighlightsToEditor(editor: vscode.TextEditor) {
     const coverage = findMatchingCoverage(filePath, coverageData.files);
 
     if (coverage) {
+        // 캐시된 오프셋 적용
+        const adjustedCoverage = lineTracker.applyOffsetsToFile(filePath, coverage);
+
         // LineTracker에 등록
         lineTracker.registerFile(filePath, {
-            coveredLines: coverage.coveredLines,
-            uncoveredLines: coverage.uncoveredLines,
-            partialCoveredLines: coverage.partialCoveredLines
+            coveredLines: adjustedCoverage.coveredLines,
+            uncoveredLines: adjustedCoverage.uncoveredLines,
+            partialCoveredLines: adjustedCoverage.partialCoveredLines
         });
 
         // 경로 매핑 저장
         filePathMapping.set(filePath, coverage.fileName);
 
-        highlighter.applyHighlights(editor, coverage);
+        highlighter.applyHighlights(editor, adjustedCoverage);
     } else {
         highlighter.clearHighlights(editor);
     }
@@ -387,6 +740,7 @@ export function deactivate() {
         highlighter.dispose();
     }
     if (lineTracker) {
+        saveCache();
         lineTracker.clear();
     }
 }
