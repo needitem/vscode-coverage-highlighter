@@ -83,6 +83,10 @@ export class CoverageTreeDataProvider implements vscode.TreeDataProvider<TreeIte
                         title: 'Go to Line',
                         arguments: [element.filePath, element.line]
                     };
+                    // 분류된 항목인 경우 contextValue 설정 (삭제 가능하도록)
+                    if (element.category) {
+                        treeItem.contextValue = 'classifiedLine';
+                    }
                 }
                 break;
 
@@ -289,7 +293,8 @@ export class CoverageTreeDataProvider implements vscode.TreeDataProvider<TreeIte
             type: 'line' as TreeItemType,
             label: `Line ${item.line}`,
             filePath: item.filePath,
-            line: item.line
+            line: item.line,
+            category
         }));
     }
 

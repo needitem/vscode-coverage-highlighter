@@ -2,7 +2,7 @@
   "name": "coverage-highlighter",
   "displayName": "Coverage Highlighter",
   "description": "Coverage XML 파일을 사용하여 코드 커버리지를 시각화합니다",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "publisher": "your-publisher",
   "engines": {
     "vscode": "^1.74.0"
@@ -77,6 +77,11 @@
       {
         "command": "coverage-highlighter.goToLine",
         "title": "Go to Line"
+      },
+      {
+        "command": "coverage-highlighter.removeClassification",
+        "title": "분류 제거",
+        "icon": "$(trash)"
       }
     ],
     "menus": {
@@ -107,6 +112,13 @@
           "command": "coverage-highlighter.generateReport",
           "when": "view == coverageExplorer",
           "group": "navigation@3"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "coverage-highlighter.removeClassification",
+          "when": "view == coverageExplorer && viewItem == classifiedLine",
+          "group": "inline"
         }
       ]
     },

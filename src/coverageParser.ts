@@ -151,3 +151,57 @@ export function findMatchingCoverage(
 
     return undefined;
 }
+
+// Find local file path matching coverage file path in workspace
+export function findLocalFilePath(
+    coverageFilePath: string,
+    workspaceRoot: string,
+    matchDepth: number = 5
+): string | undefined {
+    const fs = require('fs');
+    const path = require('path');
+
+    const covSuffix = getPathSuffix(coverageFilePath, matchDepth);
+    const suffixParts = covSuffix.split('/');
+
+    // Try to find file in workspace
+    function searchDir(dir: string, depth: number): string | undefined {
+        if (depth > 10) return undefined; // Prevent infinite recursion
+
+        try {
+            const entries = fs.readdirSync(dir, { withFileTypes: true });
+
+            for (const entry of entries) {
+                const fullPath = path.join(dir, entry.name);
+
+                if (entry.isDirectory()) {
+                    // Skip common non-source directories
+                    if (['node_modules', '.git', 'bin', 'obj', 'dist', 'out'].includes(entry.name)) {
+                        continue;
+                    }
+                    const result = searchDir(fullPath, depth + 1);
+                    if (result) return result;
+                } else if (entry.isFile()) {
+                    const localSuffix = getPathSuffix(fullPath, matchDepth);
+                    if (localSuffix === covSuffix) {
+                        return fullPath;
+                    }
+                }
+            }
+        } catch {
+            // Ignore permission errors etc
+        }
+
+        return undefined;
+    }
+
+    const result = searchDir(workspaceRoot, 0);
+    if (result) return result;
+
+    // Try with shorter match if not found
+    if (matchDepth > 2) {
+        return findLocalFilePath(coverageFilePath, workspaceRoot, matchDepth - 1);
+    }
+
+    return undefined;
+}

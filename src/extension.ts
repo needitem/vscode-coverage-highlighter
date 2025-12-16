@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
-import { parseCoverageXml, findMatchingCoverage, CoverageData, FileCoverage, normalizePath } from './coverageParser';
+import { parseCoverageXml, findMatchingCoverage, findLocalFilePath, CoverageData, FileCoverage } from './coverageParser';
 import { CoverageHighlighter } from './highlighter';
 import { LineTracker } from './lineTracker';
 import { ClassificationManager } from './classificationManager';
@@ -109,11 +109,31 @@ export function activate(context: vscode.ExtensionContext) {
     });
 
     const goToLineCommand = vscode.commands.registerCommand('coverage-highlighter.goToLine', async (filePath: string, line: number) => {
-        const doc = await vscode.workspace.openTextDocument(filePath);
-        const editor = await vscode.window.showTextDocument(doc);
-        const position = new vscode.Position(line - 1, 0);
-        editor.selection = new vscode.Selection(position, position);
-        editor.revealRange(new vscode.Range(position, position), vscode.TextEditorRevealType.InCenter);
+        let targetPath = filePath;
+
+        // 파일이 존재하지 않으면 workspace에서 매칭되는 파일 찾기
+        if (!fs.existsSync(filePath)) {
+            const workspaceFolders = vscode.workspace.workspaceFolders;
+            if (workspaceFolders && workspaceFolders.length > 0) {
+                const localPath = findLocalFilePath(filePath, workspaceFolders[0].uri.fsPath);
+                if (localPath) {
+                    targetPath = localPath;
+                } else {
+                    vscode.window.showWarningMessage(`파일을 찾을 수 없습니다: ${path.basename(filePath)}`);
+                    return;
+                }
+            }
+        }
+
+        try {
+            const doc = await vscode.workspace.openTextDocument(targetPath);
+            const editor = await vscode.window.showTextDocument(doc);
+            const position = new vscode.Position(line - 1, 0);
+            editor.selection = new vscode.Selection(position, position);
+            editor.revealRange(new vscode.Range(position, position), vscode.TextEditorRevealType.InCenter);
+        } catch (err) {
+            vscode.window.showWarningMessage(`파일을 열 수 없습니다: ${path.basename(targetPath)}`);
+        }
     });
 
     const clearCommand = vscode.commands.registerCommand('coverage-highlighter.clearCoverage', () => {
@@ -144,11 +164,20 @@ export function activate(context: vscode.ExtensionContext) {
         await showClassifications();
     });
 
+    const removeClassificationCommand = vscode.commands.registerCommand('coverage-highlighter.removeClassification', async (item: any) => {
+        if (item && item.filePath && item.line) {
+            await classificationManager.removeClassification(item.filePath, item.line);
+            treeDataProvider.refresh();
+            await saveCache();
+            vscode.window.showInformationMessage(`Line ${item.line} 분류가 제거되었습니다.`);
+        }
+    });
+
     context.subscriptions.push(
         loadCommand, clearCommand, summaryCommand,
         classifyLineCommand, classifySelectionCommand,
         manageReasonsCommand, generateReportCommand, showClassificationsCommand,
-        refreshTreeCommand, goToLineCommand
+        refreshTreeCommand, goToLineCommand, removeClassificationCommand
     );
 
     // Apply highlights when editor changes
