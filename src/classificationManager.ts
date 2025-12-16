@@ -198,14 +198,16 @@ export class ClassificationManager {
         for (const [key, list] of this.classifications.entries()) {
             const index = list.findIndex(c => pathsMatch(c.filePath, filePath) && c.line === line);
             if (index !== -1) {
+                // 실제 저장된 filePath로 인덱스에서 제거
+                const actualFilePath = list[index].filePath;
+                this.removeFromIndex(actualFilePath, line);
+                
                 list.splice(index, 1);
                 if (list.length === 0) {
                     this.classifications.delete(key);
                 }
             }
         }
-        // 인덱스에서 제거
-        this.removeFromIndex(filePath, line);
         await this.saveClassifications();
     }
 

@@ -32,6 +32,7 @@ export class CoverageTreeDataProvider implements vscode.TreeDataProvider<TreeIte
     private recentlyClassifiedLines: Set<string> = new Set();
     private recentXmlFiles: string[] = [];
     private currentXmlPath: string | undefined;
+    private expandedFilePath: string | undefined;
 
     constructor(classificationManager: ClassificationManager) {
         this.classificationManager = classificationManager;

@@ -333,8 +333,8 @@ export function activate(context: vscode.ExtensionContext) {
 
         let totalLines = 0;
         for (const item of unclassifiedItems) {
-            const lines = item.lines || [item.line];
-            await classificationManager.classifyLines(item.filePath, lines, categoryChoice.value, reasonLabel);
+            const lines = (item.lines || [item.line]) as number[];
+            await classificationManager.classifyLines(item.filePath!, lines, categoryChoice.value, reasonLabel);
             totalLines += lines.length;
         }
 
@@ -363,7 +363,7 @@ export function activate(context: vscode.ExtensionContext) {
         if (confirm !== '삭제') return;
 
         for (const item of classifiedItems) {
-            await classificationManager.removeClassification(item.filePath, item.line);
+            await classificationManager.removeClassification(item.filePath!, item.line!);
         }
 
         treeDataProvider.refresh();
@@ -414,8 +414,8 @@ export function activate(context: vscode.ExtensionContext) {
 
         // 기존 분류 삭제 후 새로 분류
         for (const item of classifiedItems) {
-            await classificationManager.removeClassification(item.filePath, item.line);
-            await classificationManager.classifyLines(item.filePath, [item.line], categoryChoice.value, reasonLabel);
+            await classificationManager.removeClassification(item.filePath!, item.line!);
+            await classificationManager.classifyLines(item.filePath!, [item.line!], categoryChoice.value, reasonLabel);
         }
 
         treeDataProvider.refresh();
