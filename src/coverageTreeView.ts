@@ -302,7 +302,7 @@ export class CoverageTreeDataProvider implements vscode.TreeDataProvider<TreeIte
                     return Promise.resolve(this.getCategoryItems());
                 } else if (element.label === '도구') {
                     return Promise.resolve(this.getActionItems());
-                } else if (element.label.startsWith('미분류')) {
+                } else if (element.label.startsWith('미분류') || element.label.startsWith('🔍')) {
                     return Promise.resolve(this.getUnclassifiedFileItems());
                 }
                 break;
