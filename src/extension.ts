@@ -5,7 +5,7 @@ import { parseCoverageXml, findMatchingCoverage, findLocalFilePathAsync, Coverag
 import { CoverageHighlighter } from './highlighter';
 import { LineTracker } from './lineTracker';
 import { ClassificationManager } from './classificationManager';
-import { CoverageTreeDataProvider } from './coverageTreeView';
+import { CoverageTreeDataProvider, SortOption } from './coverageTreeView';
 
 let coverageData: CoverageData | undefined;
 let highlighter: CoverageHighlighter;
@@ -426,6 +426,59 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.window.showInformationMessage(`${classifiedItems.length}개 항목 → ${categoryLabel}`);
     });
 
+    // 파일 검색
+    const searchFilesCommand = vscode.commands.registerCommand('coverage-highlighter.searchFiles', async () => {
+        const currentQuery = treeDataProvider.getSearchQuery();
+        const query = await vscode.window.showInputBox({
+            prompt: '검색할 파일명 또는 경로를 입력하세요',
+            placeHolder: '예: Controller, src/main, .java',
+            value: currentQuery
+        });
+
+        if (query === undefined) {
+            // 취소됨
+            return;
+        }
+
+        if (query === '') {
+            // 빈 문자열이면 검색 초기화
+            treeDataProvider.clearSearch();
+            vscode.window.showInformationMessage('검색이 초기화되었습니다.');
+        } else {
+            treeDataProvider.setSearchQuery(query);
+            const count = treeDataProvider.getSearchQuery() ? '검색 적용됨' : '';
+            vscode.window.showInformationMessage(`"${query}" 검색 중...`);
+        }
+    });
+
+    // 검색 초기화
+    const clearSearchCommand = vscode.commands.registerCommand('coverage-highlighter.clearSearch', () => {
+        treeDataProvider.clearSearch();
+        vscode.window.showInformationMessage('검색이 초기화되었습니다.');
+    });
+
+    // 정렬
+    const sortFilesCommand = vscode.commands.registerCommand('coverage-highlighter.sortFiles', async () => {
+        const currentSort = treeDataProvider.getSortOption();
+        const sortOptions: { label: string; value: SortOption; description?: string }[] = [
+            { label: '파일명 (A-Z)', value: 'name-asc', description: currentSort === 'name-asc' ? '✓ 현재' : '' },
+            { label: '파일명 (Z-A)', value: 'name-desc', description: currentSort === 'name-desc' ? '✓ 현재' : '' },
+            { label: '미분류 개수 (적은순)', value: 'count-asc', description: currentSort === 'count-asc' ? '✓ 현재' : '' },
+            { label: '미분류 개수 (많은순)', value: 'count-desc', description: currentSort === 'count-desc' ? '✓ 현재' : '' },
+            { label: '경로 (A-Z)', value: 'path-asc', description: currentSort === 'path-asc' ? '✓ 현재' : '' },
+            { label: '경로 (Z-A)', value: 'path-desc', description: currentSort === 'path-desc' ? '✓ 현재' : '' }
+        ];
+
+        const choice = await vscode.window.showQuickPick(sortOptions, {
+            placeHolder: '정렬 방식을 선택하세요'
+        });
+
+        if (choice) {
+            treeDataProvider.setSortOption(choice.value);
+            vscode.window.showInformationMessage(`"${choice.label}" 정렬 적용됨`);
+        }
+    });
+
     // 단일 분류 수정
     const editClassificationCommand = vscode.commands.registerCommand('coverage-highlighter.editClassification', async (item: any) => {
         if (!item || !item.filePath || !item.line) {
@@ -484,7 +537,8 @@ export function activate(context: vscode.ExtensionContext) {
         classifyFromTreeCommand, loadRecentXmlCommand,
         quickClassifyFromTreeDocumentCommand, quickClassifyFromTreeCommentCommand, quickClassifyFromTreeCoverCommand,
         toggleHideClassifiedCommand, classifyFromTreeWithReasonCommand,
-        bulkClassifyCommand, bulkRemoveClassificationCommand, bulkEditClassificationCommand, editClassificationCommand
+        bulkClassifyCommand, bulkRemoveClassificationCommand, bulkEditClassificationCommand, editClassificationCommand,
+        searchFilesCommand, clearSearchCommand, sortFilesCommand
     );
 
     // TreeView에 최근 파일 목록 전달

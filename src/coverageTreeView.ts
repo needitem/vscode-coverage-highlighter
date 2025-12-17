@@ -20,6 +20,9 @@ interface TreeItemData {
     isCurrent?: boolean;
 }
 
+// 정렬 옵션
+export type SortOption = 'name-asc' | 'name-desc' | 'count-asc' | 'count-desc' | 'path-asc' | 'path-desc';
+
 export class CoverageTreeDataProvider implements vscode.TreeDataProvider<TreeItemData> {
     private _onDidChangeTreeData: vscode.EventEmitter<TreeItemData | undefined | null | void> = new vscode.EventEmitter<TreeItemData | undefined | null | void>();
     readonly onDidChangeTreeData: vscode.Event<TreeItemData | undefined | null | void> = this._onDidChangeTreeData.event;
@@ -34,8 +37,37 @@ export class CoverageTreeDataProvider implements vscode.TreeDataProvider<TreeIte
     private currentXmlPath: string | undefined;
     private expandedFilePath: string | undefined;
 
+    // 검색 및 정렬 상태
+    private searchQuery: string = '';
+    private sortOption: SortOption = 'name-asc';
+
     constructor(classificationManager: ClassificationManager) {
         this.classificationManager = classificationManager;
+    }
+
+    // 검색 필터 설정
+    setSearchQuery(query: string): void {
+        this.searchQuery = query.toLowerCase().trim();
+        this.refresh();
+    }
+
+    getSearchQuery(): string {
+        return this.searchQuery;
+    }
+
+    clearSearch(): void {
+        this.searchQuery = '';
+        this.refresh();
+    }
+
+    // 정렬 옵션 설정
+    setSortOption(option: SortOption): void {
+        this.sortOption = option;
+        this.refresh();
+    }
+
+    getSortOption(): SortOption {
+        return this.sortOption;
     }
 
     setRecentXmlFiles(files: string[]): void {
@@ -296,11 +328,19 @@ export class CoverageTreeDataProvider implements vscode.TreeDataProvider<TreeIte
 
     private getRootItems(): TreeItemData[] {
         const unclassifiedCount = this.getUnclassifiedCount();
-        return [
-            { type: 'root', label: '도구' },
-            { type: 'root', label: `미분류 (${unclassifiedCount})` },
-            { type: 'root', label: '분류된 항목' }
+        const items: TreeItemData[] = [
+            { type: 'root', label: '도구' }
         ];
+
+        // 검색 중일 때 검색 상태 표시
+        if (this.searchQuery) {
+            items.push({ type: 'root', label: `🔍 "${this.searchQuery}" 검색 중 (${unclassifiedCount}개 일치)` });
+        } else {
+            items.push({ type: 'root', label: `미분류 (${unclassifiedCount})` });
+        }
+
+        items.push({ type: 'root', label: '분류된 항목' });
+        return items;
     }
 
     private getUnclassifiedCount(): number {
@@ -310,10 +350,30 @@ export class CoverageTreeDataProvider implements vscode.TreeDataProvider<TreeIte
 
         let count = 0;
         for (const [fileName, fileCoverage] of this.coverageData.files) {
+            // 검색 필터 적용
+            if (this.searchQuery && !this.matchesSearch(fileName, fileCoverage.fileName)) {
+                continue;
+            }
             const uncoveredLines = this.getUnclassifiedLinesForFile(fileName, fileCoverage);
             count += uncoveredLines.length;
         }
         return count;
+    }
+
+    // 검색어와 일치하는지 확인
+    private matchesSearch(fileName: string, filePath: string): boolean {
+        if (!this.searchQuery) {
+            return true;
+        }
+        const query = this.searchQuery;
+        const baseName = path.basename(fileName).toLowerCase();
+        const fullPath = filePath.toLowerCase();
+        const shortName = fileName.toLowerCase();
+
+        // 파일명, 경로, 전체 경로에서 검색
+        return baseName.includes(query) ||
+               shortName.includes(query) ||
+               fullPath.includes(query);
     }
 
     private getUnclassifiedLinesForFile(fileName: string, fileCoverage: FileCoverage): number[] {
@@ -452,24 +512,64 @@ export class CoverageTreeDataProvider implements vscode.TreeDataProvider<TreeIte
             return [{ type: 'action', label: 'XML을 먼저 로드하세요', command: 'coverage-highlighter.loadCoverage' }];
         }
 
-        const result: TreeItemData[] = [];
+        const result: { item: TreeItemData; count: number; fileName: string; filePath: string }[] = [];
 
         for (const [fileName, fileCoverage] of this.coverageData.files) {
+            // 검색 필터 적용
+            if (this.searchQuery && !this.matchesSearch(fileName, fileCoverage.fileName)) {
+                continue;
+            }
+
             const unclassifiedLines = this.getUnclassifiedLinesForFile(fileName, fileCoverage);
             if (unclassifiedLines.length > 0) {
                 result.push({
-                    type: 'unclassified-file',
-                    label: `${path.basename(fileName)} (${unclassifiedLines.length})`,
+                    item: {
+                        type: 'unclassified-file',
+                        label: `${path.basename(fileName)} (${unclassifiedLines.length})`,
+                        filePath: fileCoverage.fileName
+                    },
+                    count: unclassifiedLines.length,
+                    fileName: path.basename(fileName),
                     filePath: fileCoverage.fileName
                 });
             }
         }
 
         if (result.length === 0) {
+            if (this.searchQuery) {
+                return [{ type: 'line', label: `"${this.searchQuery}"에 일치하는 파일이 없습니다` }];
+            }
             return [{ type: 'line', label: '모든 항목이 분류되었습니다' }];
         }
 
-        return result;
+        // 정렬 적용
+        this.sortItems(result);
+
+        return result.map(r => r.item);
+    }
+
+    // 정렬 함수
+    private sortItems(items: { item: TreeItemData; count: number; fileName: string; filePath: string }[]): void {
+        switch (this.sortOption) {
+            case 'name-asc':
+                items.sort((a, b) => a.fileName.localeCompare(b.fileName));
+                break;
+            case 'name-desc':
+                items.sort((a, b) => b.fileName.localeCompare(a.fileName));
+                break;
+            case 'count-asc':
+                items.sort((a, b) => a.count - b.count);
+                break;
+            case 'count-desc':
+                items.sort((a, b) => b.count - a.count);
+                break;
+            case 'path-asc':
+                items.sort((a, b) => a.filePath.localeCompare(b.filePath));
+                break;
+            case 'path-desc':
+                items.sort((a, b) => b.filePath.localeCompare(a.filePath));
+                break;
+        }
     }
 
     private getUnclassifiedLineItems(filePath: string): TreeItemData[] {

@@ -2,7 +2,7 @@
   "name": "coverage-highlighter",
   "displayName": "Coverage Highlighter",
   "description": "Coverage XML 파일을 사용하여 코드 커버리지를 시각화합니다",
-  "version": "1.14.4",
+  "version": "1.15.0",
   "publisher": "your-publisher",
   "repository": {
     "type": "git",
@@ -170,6 +170,21 @@
         "command": "coverage-highlighter.editClassification",
         "title": "분류 수정",
         "icon": "$(edit)"
+      },
+      {
+        "command": "coverage-highlighter.searchFiles",
+        "title": "Coverage: 파일 검색",
+        "icon": "$(search)"
+      },
+      {
+        "command": "coverage-highlighter.clearSearch",
+        "title": "Coverage: 검색 초기화",
+        "icon": "$(close)"
+      },
+      {
+        "command": "coverage-highlighter.sortFiles",
+        "title": "Coverage: 정렬",
+        "icon": "$(list-ordered)"
       }
     ],
     "menus": {
@@ -187,19 +202,29 @@
       ],
       "view/title": [
         {
-          "command": "coverage-highlighter.loadCoverage",
+          "command": "coverage-highlighter.searchFiles",
           "when": "view == coverageExplorer",
           "group": "navigation@1"
         },
         {
-          "command": "coverage-highlighter.refreshTree",
+          "command": "coverage-highlighter.sortFiles",
           "when": "view == coverageExplorer",
           "group": "navigation@2"
         },
         {
-          "command": "coverage-highlighter.generateReport",
+          "command": "coverage-highlighter.loadCoverage",
           "when": "view == coverageExplorer",
           "group": "navigation@3"
+        },
+        {
+          "command": "coverage-highlighter.refreshTree",
+          "when": "view == coverageExplorer",
+          "group": "navigation@4"
+        },
+        {
+          "command": "coverage-highlighter.generateReport",
+          "when": "view == coverageExplorer",
+          "group": "navigation@5"
         }
       ],
       "view/item/context": [
