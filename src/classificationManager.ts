@@ -81,7 +81,8 @@ export class ClassificationManager {
      * 저장된 사유 목록 로드
      */
     private loadReasons(): void {
-        const saved = this.context.globalState.get<ReasonItem[]>(ClassificationManager.REASONS_KEY);
+        // workspaceState는 워크스페이스별로 저장됨
+        const saved = this.context.workspaceState.get<ReasonItem[]>(ClassificationManager.REASONS_KEY);
         if (saved) {
             this.reasons = saved;
         } else {
@@ -94,7 +95,8 @@ export class ClassificationManager {
      * 저장된 분류 로드
      */
     private loadClassifications(): void {
-        const saved = this.context.globalState.get<[string, ClassifiedLine[]][]>(ClassificationManager.CLASSIFICATIONS_KEY);
+        // workspaceState는 워크스페이스별로 저장됨
+        const saved = this.context.workspaceState.get<[string, ClassifiedLine[]][]>(ClassificationManager.CLASSIFICATIONS_KEY);
         if (saved) {
             this.classifications = new Map(saved);
         }
@@ -104,7 +106,7 @@ export class ClassificationManager {
      * 사유 목록 저장
      */
     private async saveReasons(): Promise<void> {
-        await this.context.globalState.update(ClassificationManager.REASONS_KEY, this.reasons);
+        await this.context.workspaceState.update(ClassificationManager.REASONS_KEY, this.reasons);
     }
 
     /**
@@ -112,7 +114,7 @@ export class ClassificationManager {
      */
     private async saveClassifications(): Promise<void> {
         const entries = Array.from(this.classifications.entries());
-        await this.context.globalState.update(ClassificationManager.CLASSIFICATIONS_KEY, entries);
+        await this.context.workspaceState.update(ClassificationManager.CLASSIFICATIONS_KEY, entries);
     }
 
     /**
