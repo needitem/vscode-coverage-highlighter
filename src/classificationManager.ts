@@ -340,6 +340,7 @@ export class ClassificationManager {
      */
     public async clearAll(): Promise<void> {
         this.classifications.clear();
+        this.classificationIndex.clear();
         await this.saveClassifications();
     }
 

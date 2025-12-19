@@ -457,6 +457,21 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.window.showInformationMessage('검색이 초기화되었습니다.');
     });
 
+    // 분류 전체 초기화
+    const clearAllClassificationsCommand = vscode.commands.registerCommand('coverage-highlighter.clearAllClassifications', async () => {
+        const confirm = await vscode.window.showWarningMessage(
+            '모든 분류 데이터를 삭제하시겠습니까? 이 작업은 되돌릴 수 없습니다.',
+            '삭제', '취소'
+        );
+        if (confirm !== '삭제') return;
+
+        await classificationManager.clearAll();
+        treeDataProvider.refresh();
+        applyHighlightsToAllEditors();
+        await saveCache();
+        vscode.window.showInformationMessage('모든 분류가 초기화되었습니다.');
+    });
+
     // 정렬
     const sortFilesCommand = vscode.commands.registerCommand('coverage-highlighter.sortFiles', async () => {
         const currentSort = treeDataProvider.getSortOption();
@@ -538,7 +553,7 @@ export function activate(context: vscode.ExtensionContext) {
         quickClassifyFromTreeDocumentCommand, quickClassifyFromTreeCommentCommand, quickClassifyFromTreeCoverCommand,
         toggleHideClassifiedCommand, classifyFromTreeWithReasonCommand,
         bulkClassifyCommand, bulkRemoveClassificationCommand, bulkEditClassificationCommand, editClassificationCommand,
-        searchFilesCommand, clearSearchCommand, sortFilesCommand
+        searchFilesCommand, clearSearchCommand, sortFilesCommand, clearAllClassificationsCommand
     );
 
     // TreeView에 최근 파일 목록 전달
