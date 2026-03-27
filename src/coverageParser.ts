@@ -32,6 +32,11 @@ export interface CoverageData {
     files: Map<string, FileCoverage>;
 }
 
+const coverageMatchIndexCache = new WeakMap<
+    Map<string, FileCoverage>,
+    Map<number, Map<string, FileCoverage>>
+>();
+
 function parseLineList(value: string | number | undefined): number[] {
     if (value === undefined || value === null || value === '') {
         return [];
@@ -129,12 +134,11 @@ export function findMatchingCoverage(
     matchDepth: number = 5
 ): FileCoverage | undefined {
     const localSuffix = getPathSuffix(localFilePath, matchDepth);
+    const coverageIndex = getCoverageMatchIndex(coverageFiles, matchDepth);
+    const matchedCoverage = coverageIndex.get(localSuffix);
 
-    for (const [coveragePath, coverage] of coverageFiles) {
-        const coverageSuffix = getPathSuffix(coveragePath, matchDepth);
-        if (localSuffix === coverageSuffix) {
-            return coverage;
-        }
+    if (matchedCoverage) {
+        return matchedCoverage;
     }
 
     if (matchDepth > 2) {
@@ -142,6 +146,31 @@ export function findMatchingCoverage(
     }
 
     return undefined;
+}
+
+function getCoverageMatchIndex(
+    coverageFiles: Map<string, FileCoverage>,
+    matchDepth: number
+): Map<string, FileCoverage> {
+    let indexesByDepth = coverageMatchIndexCache.get(coverageFiles);
+    if (!indexesByDepth) {
+        indexesByDepth = new Map();
+        coverageMatchIndexCache.set(coverageFiles, indexesByDepth);
+    }
+
+    let coverageIndex = indexesByDepth.get(matchDepth);
+    if (!coverageIndex) {
+        coverageIndex = new Map();
+        for (const [coveragePath, coverage] of coverageFiles) {
+            const suffix = getPathSuffix(coveragePath, matchDepth);
+            if (!coverageIndex.has(suffix)) {
+                coverageIndex.set(suffix, coverage);
+            }
+        }
+        indexesByDepth.set(matchDepth, coverageIndex);
+    }
+
+    return coverageIndex;
 }
 
 const filePathCache: Map<string, string | null> = new Map();

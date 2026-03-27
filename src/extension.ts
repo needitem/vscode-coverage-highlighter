@@ -246,7 +246,7 @@ async function goToLine(filePath: string, line: number): Promise<void> {
     if (!fs.existsSync(filePath)) {
         const localPath = await findLocalFilePathAsync(filePath);
         if (!localPath) {
-            vscode.window.showWarningMessage(`File not found: ${path.basename(filePath)}`);
+            vscode.window.showWarningMessage(`파일을 찾을 수 없습니다: ${path.basename(filePath)}`);
             return;
         }
 
@@ -263,7 +263,7 @@ async function goToLine(filePath: string, line: number): Promise<void> {
             vscode.TextEditorRevealType.InCenter
         );
     } catch {
-        vscode.window.showWarningMessage(`Unable to open file: ${path.basename(targetPath)}`);
+        vscode.window.showWarningMessage(`파일을 열 수 없습니다: ${path.basename(targetPath)}`);
     }
 }
 
@@ -274,8 +274,8 @@ async function loadCoverage(): Promise<void> {
     if (recentFiles.length > 0) {
         const items: Array<vscode.QuickPickItem & { path?: string }> = [
             {
-                label: '$(folder-opened) Choose another XML file...',
-                description: 'Open the file picker'
+                label: '$(folder-opened) 다른 XML 파일 선택...',
+                description: '파일 선택기로 새 XML을 엽니다'
             },
             { label: '', kind: vscode.QuickPickItemKind.Separator },
             ...recentFiles.map(file => ({
@@ -286,8 +286,8 @@ async function loadCoverage(): Promise<void> {
         ];
 
         const choice = await vscode.window.showQuickPick(items, {
-            placeHolder: 'Select a coverage XML file',
-            title: 'Load Coverage XML'
+            placeHolder: 'Coverage XML 파일을 선택하세요',
+            title: 'Coverage XML 로드'
         });
 
         if (!choice) {
@@ -308,7 +308,7 @@ async function promptForXmlFile(): Promise<string | undefined> {
     const files = await vscode.window.showOpenDialog({
         canSelectMany: false,
         filters: { 'Coverage XML': ['xml'] },
-        title: 'Select Coverage XML File'
+        title: 'Coverage XML 파일 선택'
     });
 
     return files?.[0]?.fsPath;
@@ -316,7 +316,7 @@ async function promptForXmlFile(): Promise<string | undefined> {
 
 async function loadXmlFile(xmlPath: string): Promise<void> {
     if (!fs.existsSync(xmlPath)) {
-        vscode.window.showErrorMessage(`File not found: ${xmlPath}`);
+        vscode.window.showErrorMessage(`파일을 찾을 수 없습니다: ${xmlPath}`);
         return;
     }
 
@@ -324,18 +324,18 @@ async function loadXmlFile(xmlPath: string): Promise<void> {
         await vscode.window.withProgress(
             {
                 location: vscode.ProgressLocation.Notification,
-                title: 'Loading coverage data...',
+                title: 'Coverage 데이터를 불러오는 중...',
                 cancellable: false
             },
             async progress => {
-                progress.report({ increment: 0, message: 'Parsing XML...' });
+                progress.report({ increment: 0, message: 'XML을 파싱하는 중...' });
 
                 filePathMapping.clear();
                 coverageData = parseCoverageXml(xmlPath);
                 currentXmlPath = xmlPath;
                 addToRecentFiles(xmlPath);
 
-                progress.report({ increment: 50, message: 'Applying highlights...' });
+                progress.report({ increment: 50, message: '하이라이트를 적용하는 중...' });
 
                 updateStatusBar();
                 applyHighlightsToAllEditors();
@@ -346,17 +346,17 @@ async function loadXmlFile(xmlPath: string): Promise<void> {
 
                 await saveCache();
 
-                progress.report({ increment: 100, message: 'Done' });
+                progress.report({ increment: 100, message: '완료' });
                 vscode.window.showInformationMessage(
-                    `Coverage loaded: ${coverageData.files.size} files, `
-                    + `Statement ${coverageData.summary.statementCov.toFixed(1)}%, `
-                    + `Branch ${coverageData.summary.branchCov.toFixed(1)}%`
+                    `Coverage 로드 완료: ${coverageData.files.size}개 파일, `
+                    + `구문 ${coverageData.summary.statementCov.toFixed(1)}%, `
+                    + `분기 ${coverageData.summary.branchCov.toFixed(1)}%`
                 );
             }
         );
     } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        vscode.window.showErrorMessage(`Failed to load coverage: ${message}`);
+        vscode.window.showErrorMessage(`Coverage 로드 실패: ${message}`);
     }
 }
 
@@ -370,7 +370,7 @@ async function clearCoverage(): Promise<void> {
     treeDataProvider.setCoverageData(undefined);
     treeDataProvider.setCurrentXmlPath(undefined);
     await saveCache();
-    vscode.window.showInformationMessage('Coverage highlights cleared');
+    vscode.window.showInformationMessage('Coverage 하이라이트를 초기화했습니다.');
 }
 
 async function classifyCurrentLine(): Promise<void> {
@@ -411,8 +411,8 @@ async function classifySelectedLines(): Promise<void> {
 
 async function classifyLines(filePath: string, lines: number[]): Promise<void> {
     const selection = await promptForClassification(classificationManager, {
-        categoryPlaceHolder: 'Select a classification category',
-        reasonPlaceHolder: 'Select a reason'
+        categoryPlaceHolder: '분류 카테고리를 선택하세요',
+        reasonPlaceHolder: '사유를 선택하세요'
     });
 
     if (!selection) {
@@ -432,7 +432,7 @@ async function executeQuickSlot(slotNumber: number): Promise<void> {
 
     if (!slotConfig?.category) {
         vscode.window.showWarningMessage(
-            `Quick slot ${slotNumber} is not configured. Set coverageHighlighter.quickSlot${slotNumber} first.`
+            `빠른 분류 슬롯 ${slotNumber}이 설정되지 않았습니다. coverageHighlighter.quickSlot${slotNumber}을 먼저 설정하세요.`
         );
         return;
     }
@@ -447,7 +447,7 @@ async function executeQuickSlot(slotNumber: number): Promise<void> {
     const blockLines = lineTracker.getUncoveredBlock(filePath, line);
 
     const reason = slotConfig.reason?.trim()
-        || await promptForReason(classificationManager, slotConfig.category, 'Select a reason');
+        || await promptForReason(classificationManager, slotConfig.category, '사유를 선택하세요');
 
     if (reason === undefined) {
         return;
@@ -488,7 +488,7 @@ async function quickClassifyFromTree(
     const reason = await promptForReason(
         classificationManager,
         category,
-        'Select a reason'
+        '사유를 선택하세요'
     );
 
     if (reason === undefined) {
@@ -542,13 +542,13 @@ async function bulkClassify(): Promise<void> {
 
     const targets = flattenTreeTargets(unclassifiedItems);
     if (targets.length === 0) {
-        vscode.window.showWarningMessage('Select uncovered lines to classify.');
+        vscode.window.showWarningMessage('분류할 미분류 라인을 선택하세요.');
         return;
     }
 
     const selection = await promptForClassification(classificationManager, {
-        categoryPlaceHolder: 'Select a category for the selected lines',
-        reasonPlaceHolder: 'Select a reason'
+        categoryPlaceHolder: '선택한 라인의 분류 카테고리를 선택하세요',
+        reasonPlaceHolder: '사유를 선택하세요'
     });
 
     if (!selection) {
@@ -568,23 +568,23 @@ async function bulkRemoveClassification(): Promise<void> {
 
     const targets = flattenTreeTargets(classifiedItems);
     if (targets.length === 0) {
-        vscode.window.showWarningMessage('Select classified lines to remove.');
+        vscode.window.showWarningMessage('삭제할 분류 라인을 선택하세요.');
         return;
     }
 
     const confirmation = await vscode.window.showWarningMessage(
-        `Remove classifications from ${targets.length} selected line(s)?`,
-        'Remove',
-        'Cancel'
+        `선택한 ${targets.length}개 라인의 분류를 삭제하시겠습니까?`,
+        '삭제',
+        '취소'
     );
 
-    if (confirmation !== 'Remove') {
+    if (confirmation !== '삭제') {
         return;
     }
 
     await classificationManager.removeClassifications(targets);
     await refreshViewsAfterClassificationChange();
-    vscode.window.showInformationMessage(`Removed ${targets.length} classification(s).`);
+    vscode.window.showInformationMessage(`${targets.length}개 분류를 삭제했습니다.`);
 }
 
 async function bulkEditClassification(): Promise<void> {
@@ -595,13 +595,13 @@ async function bulkEditClassification(): Promise<void> {
 
     const targets = flattenTreeTargets(classifiedItems);
     if (targets.length === 0) {
-        vscode.window.showWarningMessage('Select classified lines to update.');
+        vscode.window.showWarningMessage('수정할 분류 라인을 선택하세요.');
         return;
     }
 
     const selection = await promptForClassification(classificationManager, {
-        categoryPlaceHolder: 'Select a new category',
-        reasonPlaceHolder: 'Select a reason'
+        categoryPlaceHolder: '새 분류 카테고리를 선택하세요',
+        reasonPlaceHolder: '사유를 선택하세요'
     });
 
     if (!selection) {
@@ -609,7 +609,7 @@ async function bulkEditClassification(): Promise<void> {
     }
 
     await applyClassificationTargets(targets, selection, {
-        message: `Updated ${targets.length} line(s) to ${getCategoryLabel(selection.category)}`
+        message: `${targets.length}개 라인을 ${getCategoryLabel(selection.category)}(으)로 수정했습니다`
             + (selection.reason ? ` (${selection.reason})` : '')
     });
 }
@@ -621,18 +621,18 @@ async function removeClassification(item: TreeSelectionItem): Promise<void> {
 
     await classificationManager.removeClassification(item.filePath, item.line);
     await refreshViewsAfterClassificationChange();
-    vscode.window.showInformationMessage(`Removed the classification for line ${item.line}.`);
+    vscode.window.showInformationMessage(`${item.line}라인의 분류를 삭제했습니다.`);
 }
 
 async function editClassification(item: TreeSelectionItem): Promise<void> {
     if (!item.filePath || item.line === undefined) {
-        vscode.window.showWarningMessage('Select a classified line to update.');
+        vscode.window.showWarningMessage('수정할 분류 라인을 선택하세요.');
         return;
     }
 
     const selection = await promptForClassification(classificationManager, {
-        categoryPlaceHolder: 'Select a new category',
-        reasonPlaceHolder: 'Select a reason'
+        categoryPlaceHolder: '새 분류 카테고리를 선택하세요',
+        reasonPlaceHolder: '사유를 선택하세요'
     });
 
     if (!selection) {
@@ -643,7 +643,7 @@ async function editClassification(item: TreeSelectionItem): Promise<void> {
         [{ filePath: item.filePath, line: item.line }],
         selection,
         {
-            message: `Updated line ${item.line} to ${getCategoryLabel(selection.category)}`
+            message: `${item.line}라인을 ${getCategoryLabel(selection.category)}(으)로 수정했습니다`
                 + (selection.reason ? ` (${selection.reason})` : '')
         }
     );
@@ -655,13 +655,13 @@ function toggleHideClassified(): void {
     treeDataProvider.setHideClassified(nextValue);
     applyHighlightsToAllEditors();
     treeDataProvider.refresh();
-    vscode.window.showInformationMessage(`Hide classified lines: ${nextValue ? 'ON' : 'OFF'}`);
+    vscode.window.showInformationMessage(`분류된 항목 숨기기: ${nextValue ? 'ON' : 'OFF'}`);
 }
 
 async function searchFiles(): Promise<void> {
     const query = await vscode.window.showInputBox({
-        prompt: 'Enter a file name or path to filter',
-        placeHolder: 'Example: Controller, src/main, .java',
+        prompt: '필터링할 파일명 또는 경로를 입력하세요',
+        placeHolder: '예: Controller, src/main, .java',
         value: treeDataProvider.getSearchQuery()
     });
 
@@ -671,32 +671,32 @@ async function searchFiles(): Promise<void> {
 
     if (query.trim() === '') {
         treeDataProvider.clearSearch();
-        vscode.window.showInformationMessage('Search cleared.');
+        vscode.window.showInformationMessage('검색을 초기화했습니다.');
         return;
     }
 
     treeDataProvider.setSearchQuery(query);
-    vscode.window.showInformationMessage(`Filtering files with "${query}".`);
+    vscode.window.showInformationMessage(`"${query}" 검색을 적용했습니다.`);
 }
 
 function clearSearch(): void {
     treeDataProvider.clearSearch();
-    vscode.window.showInformationMessage('Search cleared.');
+    vscode.window.showInformationMessage('검색을 초기화했습니다.');
 }
 
 async function sortFiles(): Promise<void> {
     const currentSort = treeDataProvider.getSortOption();
     const sortOptions: Array<{ label: string; value: SortOption; description?: string }> = [
-        { label: 'File Name (A-Z)', value: 'name-asc', description: currentSort === 'name-asc' ? 'Current' : '' },
-        { label: 'File Name (Z-A)', value: 'name-desc', description: currentSort === 'name-desc' ? 'Current' : '' },
-        { label: 'Unclassified Count (Low to High)', value: 'count-asc', description: currentSort === 'count-asc' ? 'Current' : '' },
-        { label: 'Unclassified Count (High to Low)', value: 'count-desc', description: currentSort === 'count-desc' ? 'Current' : '' },
-        { label: 'Path (A-Z)', value: 'path-asc', description: currentSort === 'path-asc' ? 'Current' : '' },
-        { label: 'Path (Z-A)', value: 'path-desc', description: currentSort === 'path-desc' ? 'Current' : '' }
+        { label: '파일명 (A-Z)', value: 'name-asc', description: currentSort === 'name-asc' ? '현재 선택' : '' },
+        { label: '파일명 (Z-A)', value: 'name-desc', description: currentSort === 'name-desc' ? '현재 선택' : '' },
+        { label: '미분류 개수 (적은 순)', value: 'count-asc', description: currentSort === 'count-asc' ? '현재 선택' : '' },
+        { label: '미분류 개수 (많은 순)', value: 'count-desc', description: currentSort === 'count-desc' ? '현재 선택' : '' },
+        { label: '경로 (A-Z)', value: 'path-asc', description: currentSort === 'path-asc' ? '현재 선택' : '' },
+        { label: '경로 (Z-A)', value: 'path-desc', description: currentSort === 'path-desc' ? '현재 선택' : '' }
     ];
 
     const choice = await vscode.window.showQuickPick(sortOptions, {
-        placeHolder: 'Select a sort order'
+        placeHolder: '정렬 방식을 선택하세요'
     });
 
     if (!choice) {
@@ -704,37 +704,37 @@ async function sortFiles(): Promise<void> {
     }
 
     treeDataProvider.setSortOption(choice.value);
-    vscode.window.showInformationMessage(`Sort applied: ${choice.label}`);
+    vscode.window.showInformationMessage(`정렬 적용: ${choice.label}`);
 }
 
 async function clearAllClassifications(): Promise<void> {
     const confirmation = await vscode.window.showWarningMessage(
-        'Remove all saved classifications? This cannot be undone.',
-        'Remove All',
-        'Cancel'
+        '저장된 모든 분류를 삭제하시겠습니까? 이 작업은 되돌릴 수 없습니다.',
+        '전체 삭제',
+        '취소'
     );
 
-    if (confirmation !== 'Remove All') {
+    if (confirmation !== '전체 삭제') {
         return;
     }
 
     await classificationManager.clearAll();
     await refreshViewsAfterClassificationChange();
-    vscode.window.showInformationMessage('All classifications were removed.');
+    vscode.window.showInformationMessage('모든 분류를 삭제했습니다.');
 }
 
 async function manageReasons(): Promise<void> {
     const reasons = classificationManager.getReasons();
     const choice = await vscode.window.showQuickPick(
         [
-            { label: '$(add) Add a reason', value: '__add__' },
+            { label: '$(add) 사유 추가', value: '__add__' },
             ...reasons.map(reason => ({
                 label: `$(trash) ${reason.label}`,
                 value: reason.id,
-                description: 'Remove this reason'
+                description: '이 사유를 삭제합니다'
             }))
         ],
-        { placeHolder: 'Manage document reasons' }
+        { placeHolder: '문서 분류 사유를 관리하세요' }
     );
 
     if (!choice) {
@@ -744,33 +744,33 @@ async function manageReasons(): Promise<void> {
     if (choice.value === '__add__') {
         const newReason = await promptForNewReason(classificationManager);
         if (newReason) {
-            vscode.window.showInformationMessage(`Added reason "${newReason}".`);
+            vscode.window.showInformationMessage(`사유를 추가했습니다: "${newReason}"`);
         }
         return;
     }
 
     const label = choice.label.replace('$(trash) ', '');
     const confirmation = await vscode.window.showWarningMessage(
-        `Remove reason "${label}"? Existing classifications keep their current labels.`,
-        'Remove',
-        'Cancel'
+        `"${label}" 사유를 삭제하시겠습니까? 기존 분류에는 현재 라벨이 유지됩니다.`,
+        '삭제',
+        '취소'
     );
 
-    if (confirmation !== 'Remove') {
+    if (confirmation !== '삭제') {
         return;
     }
 
     await classificationManager.removeReason(choice.value);
-    vscode.window.showInformationMessage(`Removed reason "${label}".`);
+    vscode.window.showInformationMessage(`사유를 삭제했습니다: "${label}"`);
 }
 
 async function generateReport(): Promise<void> {
     const reportType = await vscode.window.showQuickPick(
         [
-            { label: 'Document Report', value: 'document' },
-            { label: 'Full Report', value: 'full' }
+            { label: '문서 보고서', value: 'document' },
+            { label: '전체 보고서', value: 'full' }
         ],
-        { placeHolder: 'Select a report type' }
+        { placeHolder: '보고서 유형을 선택하세요' }
     );
 
     if (!reportType) {
@@ -792,7 +792,7 @@ async function generateReport(): Promise<void> {
 async function showClassifications(): Promise<void> {
     const panel = vscode.window.createWebviewPanel(
         'coverageClassifications',
-        'Coverage Classifications',
+        'Coverage 분류 현황',
         vscode.ViewColumn.Beside,
         { enableScripts: false }
     );
@@ -805,14 +805,14 @@ async function showClassifications(): Promise<void> {
 function showSummary(): void {
     if (!coverageData) {
         vscode.window.showWarningMessage(
-            'No coverage data loaded. Run "Coverage: Load Coverage XML" first.'
+            'Coverage 데이터가 없습니다. 먼저 "Coverage: XML 불러오기"를 실행하세요.'
         );
         return;
     }
 
     const panel = vscode.window.createWebviewPanel(
         'coverageSummary',
-        'Coverage Summary',
+        'Coverage 요약',
         vscode.ViewColumn.Beside,
         {}
     );
@@ -823,7 +823,7 @@ function showSummary(): void {
 function getActiveEditorOrWarn(): vscode.TextEditor | undefined {
     const editor = vscode.window.activeTextEditor;
     if (!editor) {
-        vscode.window.showWarningMessage('No active editor.');
+        vscode.window.showWarningMessage('활성 에디터가 없습니다.');
     }
     return editor;
 }
@@ -892,7 +892,7 @@ function buildClassificationMessage(
     lineCount: number,
     selection: ClassificationSelection
 ): string {
-    return `${lineCount} line(s) classified as ${getCategoryLabel(selection.category)}`
+    return `${lineCount}개 라인을 ${getCategoryLabel(selection.category)}(으)로 분류했습니다`
         + (selection.reason ? ` (${selection.reason})` : '');
 }
 
@@ -950,10 +950,10 @@ function updateStatusBar(): void {
         return;
     }
 
-    statusBarItem.text = `$(beaker) Coverage: ${coverageData.summary.statementCov.toFixed(1)}%`;
+    statusBarItem.text = `$(beaker) 커버리지: ${coverageData.summary.statementCov.toFixed(1)}%`;
     statusBarItem.tooltip =
-        `Statement: ${coverageData.summary.statementCov.toFixed(1)}% | `
-        + `Branch: ${coverageData.summary.branchCov.toFixed(1)}%\nClick for details`;
+        `구문: ${coverageData.summary.statementCov.toFixed(1)}% | `
+        + `분기: ${coverageData.summary.branchCov.toFixed(1)}%\n클릭하여 요약 보기`;
     statusBarItem.show();
 }
 

@@ -45,7 +45,7 @@ export async function promptForClassification(
 }
 
 export async function promptForCategory(
-    placeHolder: string = 'Select a classification category',
+    placeHolder: string = '분류 카테고리를 선택하세요',
     includeDescriptions: boolean = true
 ): Promise<ClassificationCategory | undefined> {
     const choice = await vscode.window.showQuickPick(
@@ -59,7 +59,7 @@ export async function promptForCategory(
 export async function promptForReason(
     classificationManager: ClassificationManager,
     category: ClassificationCategory,
-    placeHolder: string = 'Select a reason'
+    placeHolder: string = '사유를 선택하세요'
 ): Promise<string | undefined> {
     if (!requiresReason(category)) {
         return '';
@@ -73,7 +73,7 @@ export async function promptForReason(
     const choice = await vscode.window.showQuickPick(
         [
             ...reasons.map(reason => ({ label: reason.label, value: reason.label })),
-            { label: '$(add) Add a new reason...', value: '__new__' }
+            { label: '$(add) 새 사유 추가...', value: '__new__' }
         ],
         { placeHolder }
     );
@@ -91,8 +91,8 @@ export async function promptForReason(
 
 export async function promptForNewReason(
     classificationManager?: ClassificationManager,
-    prompt: string = 'Enter a reason',
-    placeHolder: string = 'Example: UI-related code'
+    prompt: string = '사유를 입력하세요',
+    placeHolder: string = '예: UI 관련 코드'
 ): Promise<string | undefined> {
     const reason = await vscode.window.showInputBox({
         prompt,

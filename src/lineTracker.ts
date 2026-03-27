@@ -236,23 +236,27 @@ export class LineTracker {
             return coverage;
         }
 
-        // 누적 오프셋 계산 함수
-        const calculateOffset = (line: number): number => {
-            let totalOffset = 0;
-            for (const [offsetLine, delta] of offsets) {
-                if (offsetLine <= line) {
-                    totalOffset += delta;
-                }
-            }
-            return totalOffset;
-        };
+        const sortedOffsets = Array.from(offsets.entries())
+            .sort((left, right) => left[0] - right[0]);
 
         // 라인 조정
         const adjustLineSet = (lineSet: Set<number>): Set<number> => {
             const adjusted = new Set<number>();
-            for (const line of lineSet) {
-                const offset = calculateOffset(line);
-                const newLine = line + offset;
+
+            const sortedLines = Array.from(lineSet).sort((left, right) => left - right);
+            let offsetIndex = 0;
+            let cumulativeOffset = 0;
+
+            for (const line of sortedLines) {
+                while (
+                    offsetIndex < sortedOffsets.length
+                    && sortedOffsets[offsetIndex][0] <= line
+                ) {
+                    cumulativeOffset += sortedOffsets[offsetIndex][1];
+                    offsetIndex++;
+                }
+
+                const newLine = line + cumulativeOffset;
                 if (newLine > 0) {
                     adjusted.add(newLine);
                 }

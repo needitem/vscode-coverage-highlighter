@@ -10,19 +10,19 @@ export interface CategoryOption {
 
 const CATEGORY_OPTIONS_WITH_DESCRIPTIONS: readonly CategoryOption[] = [
     {
-        label: 'Document',
+        label: '문서',
         value: 'document',
-        description: 'Include the uncovered lines in a documentation report'
+        description: '보고서에 포함할 미커버 코드를 분류합니다'
     },
     {
-        label: 'Comment Planned',
+        label: '주석 예정',
         value: 'comment-planned',
-        description: 'Handle the uncovered lines with comments later'
+        description: '추후 주석 처리할 코드를 분류합니다'
     },
     {
-        label: 'Cover Planned',
+        label: '커버 예정',
         value: 'cover-planned',
-        description: 'Add coverage for the uncovered lines later'
+        description: '추후 커버리지를 추가할 코드를 분류합니다'
     }
 ];
 
@@ -35,11 +35,11 @@ export function getCategoryOptions(includeDescriptions: boolean = true): Categor
 export function getCategoryLabel(category: ClassificationCategory): string {
     switch (category) {
         case 'document':
-            return 'Document';
+            return '문서';
         case 'comment-planned':
-            return 'Comment Planned';
+            return '주석 예정';
         case 'cover-planned':
-            return 'Cover Planned';
+            return '커버 예정';
     }
 }
 
