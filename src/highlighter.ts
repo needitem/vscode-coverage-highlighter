@@ -6,7 +6,6 @@ export class CoverageHighlighter {
     private coveredDecorationType: vscode.TextEditorDecorationType;
     private uncoveredDecorationType: vscode.TextEditorDecorationType;
     private partialDecorationType: vscode.TextEditorDecorationType;
-    private activeDecorations: Map<string, vscode.TextEditorDecorationType[]> = new Map();
     private classificationManager: ClassificationManager | undefined;
     private hideClassified: boolean = false;
 
@@ -32,7 +31,6 @@ export class CoverageHighlighter {
         const config = vscode.workspace.getConfiguration('coverageHighlighter');
 
         let backgroundColor: string;
-        let gutterIconPath: string | undefined;
         let overviewRulerColor: string;
 
         switch (type) {

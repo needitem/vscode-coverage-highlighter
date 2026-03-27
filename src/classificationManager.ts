@@ -1,25 +1,14 @@
-import * as vscode from 'vscode';
 import * as path from 'path';
-
-// 경로 매칭을 위한 suffix 추출
-function getPathSuffix(filePath: string, depth: number = 5): string {
-    const normalized = filePath.replace(/\\/g, '/').toLowerCase();
-    const parts = normalized.split('/').filter(p => p.length > 0);
-    return parts.slice(-depth).join('/');
-}
-
-function pathsMatch(path1: string, path2: string): boolean {
-    const suffix1 = getPathSuffix(path1);
-    const suffix2 = getPathSuffix(path2);
-    return suffix1 === suffix2;
-}
+import * as vscode from 'vscode';
+import { ClassificationCategory } from './classification';
+import { getPathSuffix, pathsMatch } from './pathUtils';
 
 export interface ClassifiedLine {
     filePath: string;
     fileName: string;
     line: number;
     reason: string;
-    category: 'document' | 'comment-planned' | 'cover-planned';
+    category: ClassificationCategory;
 }
 
 export interface ReasonItem {
@@ -27,309 +16,174 @@ export interface ReasonItem {
     label: string;
 }
 
-/**
- * 미달성 라인 분류 관리자
- */
+export interface ClassificationTarget {
+    filePath: string;
+    line: number;
+}
+
+interface IndexedClassification {
+    key: string;
+    item: ClassifiedLine;
+}
+
 export class ClassificationManager {
     private classifications: Map<string, ClassifiedLine[]> = new Map();
     private reasons: ReasonItem[] = [];
-    private context: vscode.ExtensionContext;
+    private readonly context: vscode.ExtensionContext;
     private static readonly REASONS_KEY = 'coverage-highlighter.reasons';
     private static readonly CLASSIFICATIONS_KEY = 'coverage-highlighter.classifications';
-
-    // 성능 최적화: 파일+라인 기반 인덱스 (O(1) lookup)
-    // key: "normalizedPathSuffix:line" -> ClassifiedLine
-    private classificationIndex: Map<string, ClassifiedLine> = new Map();
+    private classificationIndex: Map<string, IndexedClassification> = new Map();
 
     constructor(context: vscode.ExtensionContext) {
         this.context = context;
         this.loadReasons();
         this.loadClassifications();
-        this.rebuildIndex();
+        this.normalizeClassifications();
     }
 
-    // 인덱스 키 생성 (경로 suffix + 라인)
-    private getIndexKey(filePath: string, line: number): string {
-        const suffix = getPathSuffix(filePath);
-        return `${suffix}:${line}`;
-    }
-
-    // 인덱스 재구축
-    private rebuildIndex(): void {
-        this.classificationIndex.clear();
-        for (const list of this.classifications.values()) {
-            for (const item of list) {
-                const key = this.getIndexKey(item.filePath, item.line);
-                this.classificationIndex.set(key, item);
-            }
-        }
-    }
-
-    // 인덱스에 항목 추가
-    private addToIndex(item: ClassifiedLine): void {
-        const key = this.getIndexKey(item.filePath, item.line);
-        this.classificationIndex.set(key, item);
-    }
-
-    // 인덱스에서 항목 제거
-    private removeFromIndex(filePath: string, line: number): void {
-        const key = this.getIndexKey(filePath, line);
-        this.classificationIndex.delete(key);
-    }
-
-    /**
-     * 저장된 사유 목록 로드
-     */
-    private loadReasons(): void {
-        // workspaceState는 워크스페이스별로 저장됨
-        const saved = this.context.workspaceState.get<ReasonItem[]>(ClassificationManager.REASONS_KEY);
-        if (saved) {
-            this.reasons = saved;
-        } else {
-            // 기본 사유 없음 - 빈 목록으로 시작
-            this.reasons = [];
-        }
-    }
-
-    /**
-     * 저장된 분류 로드
-     */
-    private loadClassifications(): void {
-        // workspaceState는 워크스페이스별로 저장됨
-        const saved = this.context.workspaceState.get<[string, ClassifiedLine[]][]>(ClassificationManager.CLASSIFICATIONS_KEY);
-        if (saved) {
-            this.classifications = new Map(saved);
-        }
-    }
-
-    /**
-     * 사유 목록 저장
-     */
-    private async saveReasons(): Promise<void> {
-        await this.context.workspaceState.update(ClassificationManager.REASONS_KEY, this.reasons);
-    }
-
-    /**
-     * 분류 저장
-     */
-    private async saveClassifications(): Promise<void> {
-        const entries = Array.from(this.classifications.entries());
-        await this.context.workspaceState.update(ClassificationManager.CLASSIFICATIONS_KEY, entries);
-    }
-
-    /**
-     * 사유 목록 가져오기
-     */
     public getReasons(): ReasonItem[] {
         return [...this.reasons];
     }
 
-    /**
-     * 새 사유 추가
-     */
     public async addReason(label: string): Promise<ReasonItem> {
-        const id = `custom-${Date.now()}`;
-        const newReason: ReasonItem = { id, label };
+        const normalizedLabel = label.trim();
+        const existing = this.reasons.find(reason => reason.label === normalizedLabel);
+        if (existing) {
+            return existing;
+        }
+
+        const newReason: ReasonItem = {
+            id: `custom-${Date.now()}`,
+            label: normalizedLabel
+        };
+
         this.reasons.push(newReason);
         await this.saveReasons();
         return newReason;
     }
 
-    /**
-     * 사유 삭제
-     */
     public async removeReason(id: string): Promise<void> {
-        this.reasons = this.reasons.filter(r => r.id !== id);
+        this.reasons = this.reasons.filter(reason => reason.id !== id);
         await this.saveReasons();
     }
 
-    /**
-     * 라인 분류하기
-     */
     public async classifyLine(
         filePath: string,
         line: number,
-        category: 'document' | 'comment-planned' | 'cover-planned',
+        category: ClassificationCategory,
         reason: string
     ): Promise<void> {
-        const key = this.getKey(category, reason);
-        const fileName = path.basename(filePath);
+        await this.classifyLines(filePath, [line], category, reason);
+    }
 
-        const classification: ClassifiedLine = {
-            filePath,
-            fileName,
-            line,
-            reason,
-            category
-        };
+    public async classifyLines(
+        filePath: string,
+        lines: number[],
+        category: ClassificationCategory,
+        reason: string
+    ): Promise<void> {
+        await this.classifyTargets(
+            this.toTargets(filePath, lines),
+            category,
+            reason
+        );
+    }
 
-        if (!this.classifications.has(key)) {
-            this.classifications.set(key, []);
+    public async classifyTargets(
+        targets: ClassificationTarget[],
+        category: ClassificationCategory,
+        reason: string
+    ): Promise<void> {
+        const normalizedReason = reason.trim();
+        let changed = false;
+
+        for (const target of this.deduplicateTargets(targets)) {
+            const nextItem: ClassifiedLine = {
+                filePath: target.filePath,
+                fileName: path.basename(target.filePath),
+                line: target.line,
+                reason: normalizedReason,
+                category
+            };
+
+            changed = this.upsertClassification(nextItem) || changed;
         }
 
-        const list = this.classifications.get(key)!;
-
-        // 중복 체크
-        const exists = list.some(c => c.filePath === filePath && c.line === line);
-        if (!exists) {
-            list.push(classification);
-            // 인덱스 업데이트
-            this.addToIndex(classification);
+        if (changed) {
             await this.saveClassifications();
         }
     }
 
-    /**
-     * 여러 라인 분류하기
-     */
-    public async classifyLines(
-        filePath: string,
-        lines: number[],
-        category: 'document' | 'comment-planned' | 'cover-planned',
-        reason: string
-    ): Promise<void> {
-        for (const line of lines) {
-            await this.classifyLine(filePath, line, category, reason);
-        }
-    }
-
-    /**
-     * 분류 제거
-     */
     public async removeClassification(filePath: string, line: number): Promise<void> {
-        for (const [key, list] of this.classifications.entries()) {
-            const index = list.findIndex(c => pathsMatch(c.filePath, filePath) && c.line === line);
-            if (index !== -1) {
-                // 실제 저장된 filePath로 인덱스에서 제거
-                const actualFilePath = list[index].filePath;
-                this.removeFromIndex(actualFilePath, line);
-                
-                list.splice(index, 1);
-                if (list.length === 0) {
-                    this.classifications.delete(key);
-                }
-            }
-        }
-        await this.saveClassifications();
+        await this.removeClassifications([{ filePath, line }]);
     }
 
-    /**
-     * 카테고리별 분류 가져오기
-     */
-    public getClassificationsByCategory(category: 'document' | 'comment-planned' | 'cover-planned'): Map<string, ClassifiedLine[]> {
+    public async removeClassifications(targets: ClassificationTarget[]): Promise<void> {
+        let changed = false;
+
+        for (const target of this.deduplicateTargets(targets)) {
+            changed = this.removeClassificationInternal(target.filePath, target.line) || changed;
+        }
+
+        if (changed) {
+            await this.saveClassifications();
+        }
+    }
+
+    public getClassificationsByCategory(category: ClassificationCategory): Map<string, ClassifiedLine[]> {
         const result = new Map<string, ClassifiedLine[]>();
 
         for (const [key, list] of this.classifications.entries()) {
-            if (key.startsWith(category + ':')) {
-                const reason = key.substring(category.length + 1);
-                result.set(reason, list);
+            if (key.startsWith(`${category}:`)) {
+                result.set(key.substring(category.length + 1), list);
             }
         }
 
         return result;
     }
 
-    /**
-     * 모든 분류 가져오기
-     */
     public getAllClassifications(): Map<string, ClassifiedLine[]> {
         return new Map(this.classifications);
     }
 
-    /**
-     * 분류 키 생성
-     */
-    private getKey(category: string, reason: string): string {
-        return `${category}:${reason}`;
-    }
-
-    /**
-     * 보고서 생성 - 문서용
-     */
     public generateDocumentReport(): string {
         const documentClassifications = this.getClassificationsByCategory('document');
-
         if (documentClassifications.size === 0) {
-            return '분류된 항목이 없습니다.';
+            return 'No classified lines found.';
         }
 
-        let report = '# 미달성 코드 분류 보고서\n\n';
-        report += `생성일: ${new Date().toLocaleString('ko-KR')}\n\n`;
+        let report = '# Uncovered Code Report\n\n';
+        report += `Generated: ${new Date().toLocaleString('ko-KR')}\n\n`;
 
         for (const [reason, items] of documentClassifications.entries()) {
-            report += `## ${reason}\n\n`;
-
-            // 파일별로 그룹화
-            const byFile = new Map<string, number[]>();
-            for (const item of items) {
-                if (!byFile.has(item.fileName)) {
-                    byFile.set(item.fileName, []);
-                }
-                byFile.get(item.fileName)!.push(item.line);
-            }
-
-            report += '| 번호 | 파일명 | 코드위치 | 비고 |\n';
-            report += '|------|--------|----------|------|\n';
-
-            let index = 1;
-            for (const [fileName, lines] of byFile.entries()) {
-                lines.sort((a, b) => a - b);
-                const linesStr = lines.join(' ');
-                report += `| ${index} | ${fileName} | ${linesStr} | |\n`;
-                index++;
-            }
-
+            report += `## ${reason || 'Unspecified'}\n\n`;
+            report += this.buildReportTable(items);
             report += '\n';
         }
 
         return report;
     }
 
-    /**
-     * 보고서 생성 - 전체
-     */
     public generateFullReport(): string {
-        let report = '# 미달성 코드 분류 전체 보고서\n\n';
-        report += `생성일: ${new Date().toLocaleString('ko-KR')}\n\n`;
+        let report = '# Full Uncovered Code Report\n\n';
+        report += `Generated: ${new Date().toLocaleString('ko-KR')}\n\n`;
 
-        const categories = [
-            { key: 'document' as const, label: '문서화 대상' },
-            { key: 'comment-planned' as const, label: '주석 예정' },
-            { key: 'cover-planned' as const, label: '태울 예정' }
+        const categories: Array<{ key: ClassificationCategory; label: string }> = [
+            { key: 'document', label: 'Document' },
+            { key: 'comment-planned', label: 'Comment Planned' },
+            { key: 'cover-planned', label: 'Cover Planned' }
         ];
 
-        for (const cat of categories) {
-            const classifications = this.getClassificationsByCategory(cat.key);
-
+        for (const category of categories) {
+            const classifications = this.getClassificationsByCategory(category.key);
             if (classifications.size === 0) {
                 continue;
             }
 
-            report += `## ${cat.label}\n\n`;
-
+            report += `## ${category.label}\n\n`;
             for (const [reason, items] of classifications.entries()) {
-                report += `### ${reason}\n\n`;
-
-                // 파일별로 그룹화
-                const byFile = new Map<string, number[]>();
-                for (const item of items) {
-                    if (!byFile.has(item.fileName)) {
-                        byFile.set(item.fileName, []);
-                    }
-                    byFile.get(item.fileName)!.push(item.line);
-                }
-
-                report += '| 번호 | 파일명 | 코드위치 | 비고 |\n';
-                report += '|------|--------|----------|------|\n';
-
-                let index = 1;
-                for (const [fileName, lines] of byFile.entries()) {
-                    lines.sort((a, b) => a - b);
-                    const linesStr = lines.join(' ');
-                    report += `| ${index} | ${fileName} | ${linesStr} | |\n`;
-                    index++;
-                }
-
+                report += `### ${reason || 'Unspecified'}\n\n`;
+                report += this.buildReportTable(items);
                 report += '\n';
             }
         }
@@ -337,21 +191,191 @@ export class ClassificationManager {
         return report;
     }
 
-    /**
-     * 모든 분류 초기화
-     */
     public async clearAll(): Promise<void> {
         this.classifications.clear();
         this.classificationIndex.clear();
         await this.saveClassifications();
     }
 
-    /**
-     * 특정 파일의 라인이 분류되었는지 확인
-     * O(1) lookup using index
-     */
     public isClassified(filePath: string, line: number): ClassifiedLine | undefined {
-        const key = this.getIndexKey(filePath, line);
-        return this.classificationIndex.get(key);
+        return this.classificationIndex.get(this.getIndexKey(filePath, line))?.item;
+    }
+
+    private loadReasons(): void {
+        const saved = this.context.workspaceState.get<ReasonItem[]>(ClassificationManager.REASONS_KEY);
+        this.reasons = saved ?? [];
+    }
+
+    private loadClassifications(): void {
+        const saved = this.context.workspaceState.get<[string, ClassifiedLine[]][]>(
+            ClassificationManager.CLASSIFICATIONS_KEY
+        );
+
+        if (saved) {
+            this.classifications = new Map(saved);
+        }
+    }
+
+    private async saveReasons(): Promise<void> {
+        await this.context.workspaceState.update(
+            ClassificationManager.REASONS_KEY,
+            this.reasons
+        );
+    }
+
+    private async saveClassifications(): Promise<void> {
+        await this.context.workspaceState.update(
+            ClassificationManager.CLASSIFICATIONS_KEY,
+            Array.from(this.classifications.entries())
+        );
+    }
+
+    private normalizeClassifications(): void {
+        const uniqueEntries = new Map<string, ClassifiedLine>();
+
+        for (const list of this.classifications.values()) {
+            for (const item of list) {
+                const normalizedItem: ClassifiedLine = {
+                    ...item,
+                    reason: item.reason.trim()
+                };
+
+                uniqueEntries.set(
+                    this.getIndexKey(normalizedItem.filePath, normalizedItem.line),
+                    normalizedItem
+                );
+            }
+        }
+
+        this.classifications.clear();
+        for (const item of uniqueEntries.values()) {
+            const key = this.getKey(item.category, item.reason);
+            const list = this.classifications.get(key) ?? [];
+            list.push(item);
+            this.classifications.set(key, list);
+        }
+
+        this.rebuildIndex();
+    }
+
+    private rebuildIndex(): void {
+        this.classificationIndex.clear();
+
+        for (const [key, list] of this.classifications.entries()) {
+            for (const item of list) {
+                this.classificationIndex.set(
+                    this.getIndexKey(item.filePath, item.line),
+                    { key, item }
+                );
+            }
+        }
+    }
+
+    private getKey(category: ClassificationCategory, reason: string): string {
+        return `${category}:${reason}`;
+    }
+
+    private getIndexKey(filePath: string, line: number): string {
+        return `${getPathSuffix(filePath)}:${line}`;
+    }
+
+    private upsertClassification(nextItem: ClassifiedLine): boolean {
+        const existing = this.classificationIndex.get(
+            this.getIndexKey(nextItem.filePath, nextItem.line)
+        );
+
+        if (
+            existing &&
+            existing.item.category === nextItem.category &&
+            existing.item.reason === nextItem.reason &&
+            pathsMatch(existing.item.filePath, nextItem.filePath)
+        ) {
+            return false;
+        }
+
+        if (existing) {
+            this.removeClassificationInternal(existing.item.filePath, existing.item.line);
+        }
+
+        const key = this.getKey(nextItem.category, nextItem.reason);
+        const list = this.classifications.get(key) ?? [];
+        list.push(nextItem);
+        this.classifications.set(key, list);
+        this.classificationIndex.set(this.getIndexKey(nextItem.filePath, nextItem.line), {
+            key,
+            item: nextItem
+        });
+
+        return true;
+    }
+
+    private removeClassificationInternal(filePath: string, line: number): boolean {
+        const indexed = this.classificationIndex.get(this.getIndexKey(filePath, line));
+        if (!indexed) {
+            return false;
+        }
+
+        const list = this.classifications.get(indexed.key);
+        if (!list) {
+            this.classificationIndex.delete(this.getIndexKey(filePath, line));
+            return false;
+        }
+
+        const itemIndex = list.findIndex(item =>
+            item.line === indexed.item.line && pathsMatch(item.filePath, indexed.item.filePath)
+        );
+
+        if (itemIndex === -1) {
+            this.classificationIndex.delete(this.getIndexKey(filePath, line));
+            return false;
+        }
+
+        list.splice(itemIndex, 1);
+        if (list.length === 0) {
+            this.classifications.delete(indexed.key);
+        }
+
+        this.classificationIndex.delete(this.getIndexKey(filePath, line));
+        return true;
+    }
+
+    private toTargets(filePath: string, lines: number[]): ClassificationTarget[] {
+        return lines.map(line => ({ filePath, line }));
+    }
+
+    private deduplicateTargets(targets: ClassificationTarget[]): ClassificationTarget[] {
+        const uniqueTargets = new Map<string, ClassificationTarget>();
+
+        for (const target of targets) {
+            uniqueTargets.set(this.getIndexKey(target.filePath, target.line), target);
+        }
+
+        return Array.from(uniqueTargets.values()).sort((a, b) => {
+            const pathComparison = a.filePath.localeCompare(b.filePath);
+            return pathComparison !== 0 ? pathComparison : a.line - b.line;
+        });
+    }
+
+    private buildReportTable(items: ClassifiedLine[]): string {
+        const byFile = new Map<string, number[]>();
+
+        for (const item of items) {
+            if (!byFile.has(item.fileName)) {
+                byFile.set(item.fileName, []);
+            }
+            byFile.get(item.fileName)!.push(item.line);
+        }
+
+        let report = '| No. | File | Lines | Notes |\n';
+        report += '| --- | --- | --- | --- |\n';
+
+        let index = 1;
+        for (const [fileName, lines] of byFile.entries()) {
+            lines.sort((a, b) => a - b);
+            report += `| ${index} | ${fileName} | ${lines.join(', ')} | |\n`;
+            index++;
+        }
+
+        return report;
     }
 }

@@ -1,11 +1,32 @@
-import * as vscode from 'vscode';
-import * as path from 'path';
 import * as fs from 'fs';
-import { parseCoverageXml, findMatchingCoverage, findLocalFilePathAsync, CoverageData, FileCoverage } from './coverageParser';
+import * as path from 'path';
+import * as vscode from 'vscode';
+import { ClassificationCategory, getCategoryLabel } from './classification';
+import {
+    ClassificationSelection,
+    promptForClassification,
+    promptForNewReason,
+    promptForReason
+} from './classificationPrompts';
+import {
+    ClassificationManager,
+    ClassificationTarget
+} from './classificationManager';
+import { loadCoverageCache, saveCoverageCache } from './coverageCache';
+import {
+    CoverageData,
+    FileCoverage,
+    findLocalFilePathAsync,
+    findMatchingCoverage,
+    parseCoverageXml
+} from './coverageParser';
+import { CoverageTreeDataProvider, SortOption } from './coverageTreeView';
 import { CoverageHighlighter } from './highlighter';
 import { LineTracker } from './lineTracker';
-import { ClassificationManager } from './classificationManager';
-import { CoverageTreeDataProvider, SortOption } from './coverageTreeView';
+import {
+    renderClassificationsHtml,
+    renderCoverageSummaryHtml
+} from './webviewContent';
 
 let coverageData: CoverageData | undefined;
 let highlighter: CoverageHighlighter;
@@ -14,1169 +35,781 @@ let classificationManager: ClassificationManager;
 let treeDataProvider: CoverageTreeDataProvider;
 let statusBarItem: vscode.StatusBarItem;
 
-// 파일 경로 매핑 캐시 (로컬 경로 -> coverage 파일 경로)
-const filePathMapping: Map<string, string> = new Map();
-
-// 워크스페이스 캐시 파일 경로
-function getCacheFilePath(): string | undefined {
-    const workspaceFolders = vscode.workspace.workspaceFolders;
-    if (!workspaceFolders || workspaceFolders.length === 0) {
-        return undefined;
-    }
-    return path.join(workspaceFolders[0].uri.fsPath, '.vscode', 'coverage-cache.json');
-}
-
-// 캐시 데이터 인터페이스
-interface CacheData {
-    xmlPath?: string;
-    recentXmlFiles?: string[];  // 최근 로드한 XML 파일 목록
-    lineOffsets: { [filePath: string]: { [originalLine: number]: number } };
-    classifications: [string, any[]][];
-    reasons: { id: string; label: string }[];
-}
-
-// 최근 XML 파일 목록 (최대 10개)
-let recentXmlFiles: string[] = [];
+const filePathMapping = new Map<string, string>();
 const MAX_RECENT_FILES = 10;
 
-// 현재 로드된 XML 경로
+let recentXmlFiles: string[] = [];
 let currentXmlPath: string | undefined;
+let saveTimeout: NodeJS.Timeout | undefined;
 
-// 캐시 저장
-async function saveCache(): Promise<void> {
-    const cachePath = getCacheFilePath();
-    if (!cachePath) return;
-
-    const cacheDir = path.dirname(cachePath);
-    if (!fs.existsSync(cacheDir)) {
-        fs.mkdirSync(cacheDir, { recursive: true });
-    }
-
-    const lineOffsets: { [filePath: string]: { [originalLine: number]: number } } = {};
-
-    // LineTracker에서 오프셋 정보 추출
-    const trackerData = lineTracker.exportOffsets();
-    for (const [filePath, offsets] of trackerData) {
-        lineOffsets[filePath] = Object.fromEntries(offsets);
-    }
-
-    const cache: CacheData = {
-        xmlPath: currentXmlPath,
-        recentXmlFiles,
-        lineOffsets,
-        classifications: Array.from(classificationManager.getAllClassifications().entries()),
-        reasons: classificationManager.getReasons()
-    };
-
-    fs.writeFileSync(cachePath, JSON.stringify(cache, null, 2), 'utf-8');
+interface TreeSelectionItem {
+    type?: string;
+    filePath?: string;
+    line?: number;
+    lines?: number[];
+    category?: ClassificationCategory;
 }
 
-// 캐시 로드
-function loadCache(): CacheData | undefined {
-    const cachePath = getCacheFilePath();
-    if (!cachePath || !fs.existsSync(cachePath)) {
-        return undefined;
-    }
-
-    try {
-        const content = fs.readFileSync(cachePath, 'utf-8');
-        return JSON.parse(content) as CacheData;
-    } catch {
-        return undefined;
-    }
+interface QuickSlotConfig {
+    category: ClassificationCategory;
+    reason?: string;
 }
 
-export function activate(context: vscode.ExtensionContext) {
-    console.log('Coverage Highlighter is now active!');
-
+export function activate(context: vscode.ExtensionContext): void {
     highlighter = new CoverageHighlighter();
     lineTracker = new LineTracker();
     classificationManager = new ClassificationManager(context);
 
-    // highlighter에 classificationManager 연결
     highlighter.setClassificationManager(classificationManager);
 
-    // TreeView 등록 - 다중 선택 활성화
     treeDataProvider = new CoverageTreeDataProvider(classificationManager);
     treeDataProvider.setLineTracker(lineTracker);
+
     const treeView = vscode.window.createTreeView('coverageExplorer', {
-        treeDataProvider: treeDataProvider,
-        canSelectMany: true  // Shift+클릭, Ctrl+클릭으로 다중 선택 가능
+        treeDataProvider,
+        canSelectMany: true
     });
+
     treeDataProvider.setTreeView(treeView);
     context.subscriptions.push(treeView);
 
-    // 캐시 로드
-    const cache = loadCache();
-    if (cache) {
-        lineTracker.importOffsets(cache.lineOffsets);
-        if (cache.recentXmlFiles) {
-            recentXmlFiles = cache.recentXmlFiles.filter(f => fs.existsSync(f));
-        }
-        if (cache.xmlPath && fs.existsSync(cache.xmlPath)) {
-            currentXmlPath = cache.xmlPath;
-        }
-    }
+    restoreCachedState();
 
-    // Create status bar item
-    statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
+    statusBarItem = vscode.window.createStatusBarItem(
+        vscode.StatusBarAlignment.Right,
+        100
+    );
     statusBarItem.command = 'coverage-highlighter.showSummary';
-    context.subscriptions.push(statusBarItem);
 
-    // Register commands
-    const loadCommand = vscode.commands.registerCommand('coverage-highlighter.loadCoverage', async () => {
-        await loadCoverage();
-    });
-
-    const refreshTreeCommand = vscode.commands.registerCommand('coverage-highlighter.refreshTree', () => {
-        treeDataProvider.refresh();
-    });
-
-    const goToLineCommand = vscode.commands.registerCommand('coverage-highlighter.goToLine', async (filePath: string, line: number) => {
-        let targetPath = filePath;
-
-        // 파일이 존재하지 않으면 workspace에서 매칭되는 파일 찾기
-        if (!fs.existsSync(filePath)) {
-            const localPath = await findLocalFilePathAsync(filePath);
-            if (localPath) {
-                targetPath = localPath;
-            } else {
-                vscode.window.showWarningMessage(`파일을 찾을 수 없습니다: ${path.basename(filePath)}`);
-                return;
-            }
-        }
-
-        try {
-            const doc = await vscode.workspace.openTextDocument(targetPath);
-            const editor = await vscode.window.showTextDocument(doc);
-            const position = new vscode.Position(line - 1, 0);
-            editor.selection = new vscode.Selection(position, position);
-            editor.revealRange(new vscode.Range(position, position), vscode.TextEditorRevealType.InCenter);
-        } catch (err) {
-            vscode.window.showWarningMessage(`파일을 열 수 없습니다: ${path.basename(targetPath)}`);
-        }
-    });
-
-    const clearCommand = vscode.commands.registerCommand('coverage-highlighter.clearCoverage', () => {
-        clearCoverage();
-    });
-
-    const summaryCommand = vscode.commands.registerCommand('coverage-highlighter.showSummary', () => {
-        showSummary();
-    });
-
-    const classifyLineCommand = vscode.commands.registerCommand('coverage-highlighter.classifyLine', async () => {
-        await classifyCurrentLine();
-    });
-
-    const classifySelectionCommand = vscode.commands.registerCommand('coverage-highlighter.classifySelection', async () => {
-        await classifySelectedLines();
-    });
-
-    const manageReasonsCommand = vscode.commands.registerCommand('coverage-highlighter.manageReasons', async () => {
-        await manageReasons();
-    });
-
-    const generateReportCommand = vscode.commands.registerCommand('coverage-highlighter.generateReport', async () => {
-        await generateReport();
-    });
-
-    const showClassificationsCommand = vscode.commands.registerCommand('coverage-highlighter.showClassifications', async () => {
-        await showClassifications();
-    });
-
-    const removeClassificationCommand = vscode.commands.registerCommand('coverage-highlighter.removeClassification', async (item: any) => {
-        if (item && item.filePath && item.line) {
-            await classificationManager.removeClassification(item.filePath, item.line);
-            treeDataProvider.refresh();
-            await saveCache();
-            vscode.window.showInformationMessage(`Line ${item.line} 분류가 제거되었습니다.`);
-        }
-    });
-
-    // 빠른 분류 명령들 (단축키용) - 설정에서 슬롯 정보 읽음
-    const quickClassifyDocumentCommand = vscode.commands.registerCommand('coverage-highlighter.quickClassifyDocument', async () => {
-        await executeQuickSlot(1);
-    });
-
-    const quickClassifyCommentCommand = vscode.commands.registerCommand('coverage-highlighter.quickClassifyComment', async () => {
-        await executeQuickSlot(2);
-    });
-
-    const quickClassifyCoverCommand = vscode.commands.registerCommand('coverage-highlighter.quickClassifyCover', async () => {
-        await executeQuickSlot(3);
-    });
-
-    // 슬롯 4~9
-    const quickSlot4Command = vscode.commands.registerCommand('coverage-highlighter.quickSlot4', () => executeQuickSlot(4));
-    const quickSlot5Command = vscode.commands.registerCommand('coverage-highlighter.quickSlot5', () => executeQuickSlot(5));
-    const quickSlot6Command = vscode.commands.registerCommand('coverage-highlighter.quickSlot6', () => executeQuickSlot(6));
-    const quickSlot7Command = vscode.commands.registerCommand('coverage-highlighter.quickSlot7', () => executeQuickSlot(7));
-    const quickSlot8Command = vscode.commands.registerCommand('coverage-highlighter.quickSlot8', () => executeQuickSlot(8));
-    const quickSlot9Command = vscode.commands.registerCommand('coverage-highlighter.quickSlot9', () => executeQuickSlot(9));
-
-    // TreeView에서 미분류 항목 분류 (기존 - 유지)
-    const classifyFromTreeCommand = vscode.commands.registerCommand('coverage-highlighter.classifyFromTree', async (item: any) => {
-        if (item && item.filePath && item.line) {
-            await classifyLinesFromTree(item.filePath, item.line);
-        }
-    });
-
-    // TreeView에서 빠른 분류 - 문서 (사유 선택)
-    const quickClassifyFromTreeDocumentCommand = vscode.commands.registerCommand('coverage-highlighter.quickClassifyFromTreeDocument', async (item: any) => {
-        if (item && item.filePath && item.line) {
-            await quickClassifyFromTreeWithCategory(item.filePath, item.line, 'document');
-        }
-    });
-
-    // TreeView에서 빠른 분류 - 주석예정
-    const quickClassifyFromTreeCommentCommand = vscode.commands.registerCommand('coverage-highlighter.quickClassifyFromTreeComment', async (item: any) => {
-        if (item && item.filePath && item.line) {
-            await quickClassifyFromTreeDirect(item.filePath, item.line, 'comment-planned');
-        }
-    });
-
-    // TreeView에서 빠른 분류 - 태울예정
-    const quickClassifyFromTreeCoverCommand = vscode.commands.registerCommand('coverage-highlighter.quickClassifyFromTreeCover', async (item: any) => {
-        if (item && item.filePath && item.line) {
-            await quickClassifyFromTreeDirect(item.filePath, item.line, 'cover-planned');
-        }
-    });
-
-    // 분류된 항목 하이라이트 토글
-    const toggleHideClassifiedCommand = vscode.commands.registerCommand('coverage-highlighter.toggleHideClassified', () => {
-        const current = highlighter.getHideClassified();
-        highlighter.setHideClassified(!current);
-        applyHighlightsToAllEditors();
-        treeDataProvider.setHideClassified(!current);
-        treeDataProvider.refresh();
-        vscode.window.showInformationMessage(`분류된 항목 숨기기: ${!current ? 'ON' : 'OFF'}`);
-    });
-
-    // 최근 XML 직접 로드
-    const loadRecentXmlCommand = vscode.commands.registerCommand('coverage-highlighter.loadRecentXml', async (xmlPath: string) => {
-        await loadXmlFile(xmlPath);
-    });
-
-    // TreeView에서 사유와 함께 분류 (classify-option 클릭 시)
-    const classifyFromTreeWithReasonCommand = vscode.commands.registerCommand('coverage-highlighter.classifyFromTreeWithReason',
-        async (filePath: string, line: number, category: 'document' | 'comment-planned' | 'cover-planned', reason: string, lines?: number[]) => {
-            const targetLines = lines && lines.length > 0 ? lines : [line];
-            
-            let finalReason = reason;
-            if (reason === '__new__') {
-                const newReason = await vscode.window.showInputBox({
-                    prompt: '새 사유를 입력하세요',
-                    placeHolder: '예: UI 관련 코드'
-                });
-                if (!newReason) return;
-                await classificationManager.addReason(newReason);
-                finalReason = newReason;
-            }
-
-            await classificationManager.classifyLines(filePath, targetLines, category, finalReason);
-            
-            for (const l of targetLines) {
-                treeDataProvider.hideClassifiedLine(filePath, l);
-            }
-            
-            // 분류된 항목 숨기기 모드일 때 하이라이트 즉시 반영
-            applyHighlightsToAllEditors();
-            
-            await saveCache();
-            
-            const categoryLabel = category === 'document' ? '문서' : category === 'comment-planned' ? '주석예정' : '태울예정';
-            const msg = finalReason ? `${targetLines.length}개 라인 → ${categoryLabel} (${finalReason})` : `${targetLines.length}개 라인 → ${categoryLabel}`;
-            vscode.window.showInformationMessage(msg);
-        }
-    );
-
-    // 일괄 분류 (다중 선택된 미분류 항목)
-    const bulkClassifyCommand = vscode.commands.registerCommand('coverage-highlighter.bulkClassify', async (...args: any[]) => {
-        const selectedItems = treeDataProvider.getTreeView()?.selection || [];
-        const unclassifiedItems = selectedItems.filter((item: any) => item.type === 'unclassified-line' && item.filePath && item.lines);
-        
-        if (unclassifiedItems.length === 0) {
-            vscode.window.showWarningMessage('분류할 항목을 선택하세요.');
-            return;
-        }
-
-        // 카테고리 선택
-        const categoryChoice = await vscode.window.showQuickPick([
-            { label: '문서', value: 'document' as const },
-            { label: '주석 예정', value: 'comment-planned' as const },
-            { label: '태울 예정', value: 'cover-planned' as const }
-        ], { placeHolder: '분류 카테고리를 선택하세요' });
-
-        if (!categoryChoice) return;
-
-        let reasonLabel = '';
-        if (categoryChoice.value === 'document') {
-            const reasons = classificationManager.getReasons();
-            const reasonItems = [
-                ...reasons.map(r => ({ label: r.label, value: r.label })),
-                { label: '$(add) 새 사유 추가...', value: '__new__' }
-            ];
-
-            const reasonChoice = await vscode.window.showQuickPick(reasonItems, { placeHolder: '사유를 선택하세요' });
-            if (!reasonChoice) return;
-
-            if (reasonChoice.value === '__new__') {
-                const newReason = await vscode.window.showInputBox({ prompt: '새 사유를 입력하세요' });
-                if (!newReason) return;
-                await classificationManager.addReason(newReason);
-                reasonLabel = newReason;
-            } else {
-                reasonLabel = reasonChoice.value;
-            }
-        }
-
-        let totalLines = 0;
-        for (const item of unclassifiedItems) {
-            const lines = (item.lines || [item.line]) as number[];
-            await classificationManager.classifyLines(item.filePath!, lines, categoryChoice.value, reasonLabel);
-            totalLines += lines.length;
-        }
-
-        treeDataProvider.refresh();
-        applyHighlightsToAllEditors();
-        await saveCache();
-
-        const categoryLabel = categoryChoice.value === 'document' ? '문서' : categoryChoice.value === 'comment-planned' ? '주석예정' : '태울예정';
-        vscode.window.showInformationMessage(`${totalLines}개 라인 → ${categoryLabel}`);
-    });
-
-    // 일괄 삭제 (다중 선택된 분류 항목)
-    const bulkRemoveClassificationCommand = vscode.commands.registerCommand('coverage-highlighter.bulkRemoveClassification', async () => {
-        const selectedItems = treeDataProvider.getTreeView()?.selection || [];
-        const classifiedItems = selectedItems.filter((item: any) => item.type === 'line' && item.filePath && item.line && item.category);
-        
-        if (classifiedItems.length === 0) {
-            vscode.window.showWarningMessage('삭제할 분류 항목을 선택하세요.');
-            return;
-        }
-
-        const confirm = await vscode.window.showWarningMessage(
-            `${classifiedItems.length}개 항목의 분류를 삭제하시겠습니까?`,
-            '삭제', '취소'
-        );
-        if (confirm !== '삭제') return;
-
-        for (const item of classifiedItems) {
-            await classificationManager.removeClassification(item.filePath!, item.line!);
-        }
-
-        treeDataProvider.refresh();
-        applyHighlightsToAllEditors();
-        await saveCache();
-        vscode.window.showInformationMessage(`${classifiedItems.length}개 항목 분류 삭제됨`);
-    });
-
-    // 일괄 수정 (다중 선택된 분류 항목)
-    const bulkEditClassificationCommand = vscode.commands.registerCommand('coverage-highlighter.bulkEditClassification', async () => {
-        const selectedItems = treeDataProvider.getTreeView()?.selection || [];
-        const classifiedItems = selectedItems.filter((item: any) => item.type === 'line' && item.filePath && item.line && item.category);
-        
-        if (classifiedItems.length === 0) {
-            vscode.window.showWarningMessage('수정할 분류 항목을 선택하세요.');
-            return;
-        }
-
-        // 새 카테고리 선택
-        const categoryChoice = await vscode.window.showQuickPick([
-            { label: '문서', value: 'document' as const },
-            { label: '주석 예정', value: 'comment-planned' as const },
-            { label: '태울 예정', value: 'cover-planned' as const }
-        ], { placeHolder: '새 카테고리를 선택하세요' });
-
-        if (!categoryChoice) return;
-
-        let reasonLabel = '';
-        if (categoryChoice.value === 'document') {
-            const reasons = classificationManager.getReasons();
-            const reasonItems = [
-                ...reasons.map(r => ({ label: r.label, value: r.label })),
-                { label: '$(add) 새 사유 추가...', value: '__new__' }
-            ];
-
-            const reasonChoice = await vscode.window.showQuickPick(reasonItems, { placeHolder: '사유를 선택하세요' });
-            if (!reasonChoice) return;
-
-            if (reasonChoice.value === '__new__') {
-                const newReason = await vscode.window.showInputBox({ prompt: '새 사유를 입력하세요' });
-                if (!newReason) return;
-                await classificationManager.addReason(newReason);
-                reasonLabel = newReason;
-            } else {
-                reasonLabel = reasonChoice.value;
-            }
-        }
-
-        // 기존 분류 삭제 후 새로 분류
-        for (const item of classifiedItems) {
-            await classificationManager.removeClassification(item.filePath!, item.line!);
-            await classificationManager.classifyLines(item.filePath!, [item.line!], categoryChoice.value, reasonLabel);
-        }
-
-        treeDataProvider.refresh();
-        applyHighlightsToAllEditors();
-        await saveCache();
-
-        const categoryLabel = categoryChoice.value === 'document' ? '문서' : categoryChoice.value === 'comment-planned' ? '주석예정' : '태울예정';
-        vscode.window.showInformationMessage(`${classifiedItems.length}개 항목 → ${categoryLabel}`);
-    });
-
-    // 파일 검색
-    const searchFilesCommand = vscode.commands.registerCommand('coverage-highlighter.searchFiles', async () => {
-        const currentQuery = treeDataProvider.getSearchQuery();
-        const query = await vscode.window.showInputBox({
-            prompt: '검색할 파일명 또는 경로를 입력하세요',
-            placeHolder: '예: Controller, src/main, .java',
-            value: currentQuery
-        });
-
-        if (query === undefined) {
-            // 취소됨
-            return;
-        }
-
-        if (query === '') {
-            // 빈 문자열이면 검색 초기화
-            treeDataProvider.clearSearch();
-            vscode.window.showInformationMessage('검색이 초기화되었습니다.');
-        } else {
-            treeDataProvider.setSearchQuery(query);
-            const count = treeDataProvider.getSearchQuery() ? '검색 적용됨' : '';
-            vscode.window.showInformationMessage(`"${query}" 검색 중...`);
-        }
-    });
-
-    // 검색 초기화
-    const clearSearchCommand = vscode.commands.registerCommand('coverage-highlighter.clearSearch', () => {
-        treeDataProvider.clearSearch();
-        vscode.window.showInformationMessage('검색이 초기화되었습니다.');
-    });
-
-    // 분류 전체 초기화
-    const clearAllClassificationsCommand = vscode.commands.registerCommand('coverage-highlighter.clearAllClassifications', async () => {
-        const confirm = await vscode.window.showWarningMessage(
-            '모든 분류 데이터를 삭제하시겠습니까? 이 작업은 되돌릴 수 없습니다.',
-            '삭제', '취소'
-        );
-        if (confirm !== '삭제') return;
-
-        await classificationManager.clearAll();
-        treeDataProvider.refresh();
-        applyHighlightsToAllEditors();
-        await saveCache();
-        vscode.window.showInformationMessage('모든 분류가 초기화되었습니다.');
-    });
-
-    // 정렬
-    const sortFilesCommand = vscode.commands.registerCommand('coverage-highlighter.sortFiles', async () => {
-        const currentSort = treeDataProvider.getSortOption();
-        const sortOptions: { label: string; value: SortOption; description?: string }[] = [
-            { label: '파일명 (A-Z)', value: 'name-asc', description: currentSort === 'name-asc' ? '✓ 현재' : '' },
-            { label: '파일명 (Z-A)', value: 'name-desc', description: currentSort === 'name-desc' ? '✓ 현재' : '' },
-            { label: '미분류 개수 (적은순)', value: 'count-asc', description: currentSort === 'count-asc' ? '✓ 현재' : '' },
-            { label: '미분류 개수 (많은순)', value: 'count-desc', description: currentSort === 'count-desc' ? '✓ 현재' : '' },
-            { label: '경로 (A-Z)', value: 'path-asc', description: currentSort === 'path-asc' ? '✓ 현재' : '' },
-            { label: '경로 (Z-A)', value: 'path-desc', description: currentSort === 'path-desc' ? '✓ 현재' : '' }
-        ];
-
-        const choice = await vscode.window.showQuickPick(sortOptions, {
-            placeHolder: '정렬 방식을 선택하세요'
-        });
-
-        if (choice) {
-            treeDataProvider.setSortOption(choice.value);
-            vscode.window.showInformationMessage(`"${choice.label}" 정렬 적용됨`);
-        }
-    });
-
-    // 단일 분류 수정
-    const editClassificationCommand = vscode.commands.registerCommand('coverage-highlighter.editClassification', async (item: any) => {
-        if (!item || !item.filePath || !item.line) {
-            vscode.window.showWarningMessage('수정할 항목을 선택하세요.');
-            return;
-        }
-
-        const categoryChoice = await vscode.window.showQuickPick([
-            { label: '문서', value: 'document' as const },
-            { label: '주석 예정', value: 'comment-planned' as const },
-            { label: '태울 예정', value: 'cover-planned' as const }
-        ], { placeHolder: '새 카테고리를 선택하세요' });
-
-        if (!categoryChoice) return;
-
-        let reasonLabel = '';
-        if (categoryChoice.value === 'document') {
-            const reasons = classificationManager.getReasons();
-            const reasonItems = [
-                ...reasons.map(r => ({ label: r.label, value: r.label })),
-                { label: '$(add) 새 사유 추가...', value: '__new__' }
-            ];
-
-            const reasonChoice = await vscode.window.showQuickPick(reasonItems, { placeHolder: '사유를 선택하세요' });
-            if (!reasonChoice) return;
-
-            if (reasonChoice.value === '__new__') {
-                const newReason = await vscode.window.showInputBox({ prompt: '새 사유를 입력하세요' });
-                if (!newReason) return;
-                await classificationManager.addReason(newReason);
-                reasonLabel = newReason;
-            } else {
-                reasonLabel = reasonChoice.value;
-            }
-        }
-
-        await classificationManager.removeClassification(item.filePath, item.line);
-        await classificationManager.classifyLines(item.filePath, [item.line], categoryChoice.value, reasonLabel);
-
-        treeDataProvider.refresh();
-        applyHighlightsToAllEditors();
-        await saveCache();
-
-        const categoryLabel = categoryChoice.value === 'document' ? '문서' : categoryChoice.value === 'comment-planned' ? '주석예정' : '태울예정';
-        vscode.window.showInformationMessage(`Line ${item.line} → ${categoryLabel}`);
-    });
-
-    context.subscriptions.push(
-        loadCommand, clearCommand, summaryCommand,
-        classifyLineCommand, classifySelectionCommand,
-        manageReasonsCommand, generateReportCommand, showClassificationsCommand,
-        refreshTreeCommand, goToLineCommand, removeClassificationCommand,
-        quickClassifyDocumentCommand, quickClassifyCommentCommand, quickClassifyCoverCommand,
-        quickSlot4Command, quickSlot5Command, quickSlot6Command,
-        quickSlot7Command, quickSlot8Command, quickSlot9Command,
-        classifyFromTreeCommand, loadRecentXmlCommand,
-        quickClassifyFromTreeDocumentCommand, quickClassifyFromTreeCommentCommand, quickClassifyFromTreeCoverCommand,
-        toggleHideClassifiedCommand, classifyFromTreeWithReasonCommand,
-        bulkClassifyCommand, bulkRemoveClassificationCommand, bulkEditClassificationCommand, editClassificationCommand,
-        searchFilesCommand, clearSearchCommand, sortFilesCommand, clearAllClassificationsCommand
-    );
-
-    // TreeView에 최근 파일 목록 전달
     treeDataProvider.setRecentXmlFiles(recentXmlFiles);
-    if (currentXmlPath) {
-        treeDataProvider.setCurrentXmlPath(currentXmlPath);
-    }
+    treeDataProvider.setCurrentXmlPath(currentXmlPath);
 
-    // Apply highlights when editor changes
+    const commands = [
+        vscode.commands.registerCommand('coverage-highlighter.loadCoverage', () => loadCoverage()),
+        vscode.commands.registerCommand('coverage-highlighter.refreshTree', () => treeDataProvider.refresh()),
+        vscode.commands.registerCommand('coverage-highlighter.goToLine', (filePath: string, line: number) => goToLine(filePath, line)),
+        vscode.commands.registerCommand('coverage-highlighter.clearCoverage', () => void clearCoverage()),
+        vscode.commands.registerCommand('coverage-highlighter.showSummary', () => showSummary()),
+        vscode.commands.registerCommand('coverage-highlighter.classifyLine', () => void classifyCurrentLine()),
+        vscode.commands.registerCommand('coverage-highlighter.classifySelection', () => void classifySelectedLines()),
+        vscode.commands.registerCommand('coverage-highlighter.manageReasons', () => void manageReasons()),
+        vscode.commands.registerCommand('coverage-highlighter.generateReport', () => void generateReport()),
+        vscode.commands.registerCommand('coverage-highlighter.showClassifications', () => void showClassifications()),
+        vscode.commands.registerCommand('coverage-highlighter.removeClassification', (item: TreeSelectionItem) => void removeClassification(item)),
+        vscode.commands.registerCommand('coverage-highlighter.quickClassifyDocument', () => void executeQuickSlot(1)),
+        vscode.commands.registerCommand('coverage-highlighter.quickClassifyComment', () => void executeQuickSlot(2)),
+        vscode.commands.registerCommand('coverage-highlighter.quickClassifyCover', () => void executeQuickSlot(3)),
+        vscode.commands.registerCommand('coverage-highlighter.quickSlot4', () => void executeQuickSlot(4)),
+        vscode.commands.registerCommand('coverage-highlighter.quickSlot5', () => void executeQuickSlot(5)),
+        vscode.commands.registerCommand('coverage-highlighter.quickSlot6', () => void executeQuickSlot(6)),
+        vscode.commands.registerCommand('coverage-highlighter.quickSlot7', () => void executeQuickSlot(7)),
+        vscode.commands.registerCommand('coverage-highlighter.quickSlot8', () => void executeQuickSlot(8)),
+        vscode.commands.registerCommand('coverage-highlighter.quickSlot9', () => void executeQuickSlot(9)),
+        vscode.commands.registerCommand('coverage-highlighter.classifyFromTree', (item: TreeSelectionItem) => void classifyFromTree(item)),
+        vscode.commands.registerCommand('coverage-highlighter.quickClassifyFromTreeDocument', (item: TreeSelectionItem) => void quickClassifyFromTree(item, 'document')),
+        vscode.commands.registerCommand('coverage-highlighter.quickClassifyFromTreeComment', (item: TreeSelectionItem) => void quickClassifyFromTree(item, 'comment-planned')),
+        vscode.commands.registerCommand('coverage-highlighter.quickClassifyFromTreeCover', (item: TreeSelectionItem) => void quickClassifyFromTree(item, 'cover-planned')),
+        vscode.commands.registerCommand('coverage-highlighter.toggleHideClassified', () => toggleHideClassified()),
+        vscode.commands.registerCommand('coverage-highlighter.loadRecentXml', (xmlPath: string) => void loadXmlFile(xmlPath)),
+        vscode.commands.registerCommand(
+            'coverage-highlighter.classifyFromTreeWithReason',
+            (filePath: string, line: number, category: ClassificationCategory, reason: string, lines?: number[]) =>
+                void classifyFromTreeWithReason(filePath, line, category, reason, lines)
+        ),
+        vscode.commands.registerCommand('coverage-highlighter.bulkClassify', () => void bulkClassify()),
+        vscode.commands.registerCommand('coverage-highlighter.bulkRemoveClassification', () => void bulkRemoveClassification()),
+        vscode.commands.registerCommand('coverage-highlighter.bulkEditClassification', () => void bulkEditClassification()),
+        vscode.commands.registerCommand('coverage-highlighter.searchFiles', () => void searchFiles()),
+        vscode.commands.registerCommand('coverage-highlighter.clearSearch', () => clearSearch()),
+        vscode.commands.registerCommand('coverage-highlighter.sortFiles', () => void sortFiles()),
+        vscode.commands.registerCommand('coverage-highlighter.clearAllClassifications', () => void clearAllClassifications()),
+        vscode.commands.registerCommand('coverage-highlighter.editClassification', (item: TreeSelectionItem) => void editClassification(item))
+    ];
+
     context.subscriptions.push(
+        statusBarItem,
+        ...commands,
         vscode.window.onDidChangeActiveTextEditor(editor => {
             if (editor && coverageData) {
                 applyHighlightsToEditor(editor);
             }
-        })
-    );
-
-    // Apply highlights when document is opened
-    context.subscriptions.push(
-        vscode.workspace.onDidOpenTextDocument(doc => {
-            const editor = vscode.window.visibleTextEditors.find(e => e.document === doc);
+        }),
+        vscode.workspace.onDidOpenTextDocument(document => {
+            const editor = vscode.window.visibleTextEditors.find(
+                candidate => candidate.document === document
+            );
             if (editor && coverageData) {
                 applyHighlightsToEditor(editor);
             }
-        })
-    );
-
-    // 문서 변경 시 라인 추적 및 하이라이트 업데이트
-    context.subscriptions.push(
+        }),
         vscode.workspace.onDidChangeTextDocument(event => {
             if (!coverageData) {
                 return;
             }
 
-            const filePath = event.document.uri.fsPath;
-
-            // LineTracker로 라인 변경 추적
             const changed = lineTracker.handleDocumentChange(event);
+            if (!changed) {
+                return;
+            }
 
-            if (changed) {
-                // 변경된 라인 정보로 하이라이트 다시 적용
-                const editor = vscode.window.visibleTextEditors.find(
-                    e => e.document.uri.fsPath === filePath
-                );
-                if (editor) {
-                    applyHighlightsToEditorWithTracker(editor);
+            const editor = vscode.window.visibleTextEditors.find(
+                candidate => candidate.document.uri.fsPath === event.document.uri.fsPath
+            );
+
+            if (editor) {
+                applyHighlightsToEditorWithTracker(editor);
+            }
+
+            debouncedSaveCache();
+        }),
+        vscode.workspace.onDidChangeConfiguration(event => {
+            if (!event.affectsConfiguration('coverageHighlighter')) {
+                return;
+            }
+
+            highlighter.refreshDecorationTypes();
+            if (coverageData) {
+                applyHighlightsToAllEditors();
+            }
+        }),
+        {
+            dispose: () => {
+                if (saveTimeout) {
+                    clearTimeout(saveTimeout);
                 }
 
-                // 캐시 저장 (디바운스)
-                debouncedSaveCache();
+                void saveCache();
+                highlighter.dispose();
+                lineTracker.clear();
             }
-        })
-    );
-
-    // Re-apply highlights when configuration changes
-    context.subscriptions.push(
-        vscode.workspace.onDidChangeConfiguration(e => {
-            if (e.affectsConfiguration('coverageHighlighter')) {
-                highlighter.refreshDecorationTypes();
-                if (coverageData) {
-                    applyHighlightsToAllEditors();
-                }
-            }
-        })
-    );
-
-    context.subscriptions.push({
-        dispose: () => {
-            highlighter.dispose();
-            lineTracker.clear();
-            saveCache();
         }
+    );
+}
+
+function restoreCachedState(): void {
+    const cache = loadCoverageCache();
+    if (!cache) {
+        return;
+    }
+
+    lineTracker.importOffsets(cache.lineOffsets);
+    recentXmlFiles = cache.recentXmlFiles.filter(filePath => fs.existsSync(filePath));
+
+    if (cache.xmlPath && fs.existsSync(cache.xmlPath)) {
+        currentXmlPath = cache.xmlPath;
+    }
+}
+
+async function saveCache(): Promise<void> {
+    const lineOffsets: Record<string, Record<number, number>> = {};
+
+    for (const [filePath, offsets] of lineTracker.exportOffsets().entries()) {
+        lineOffsets[filePath] = Object.fromEntries(offsets);
+    }
+
+    await saveCoverageCache({
+        xmlPath: currentXmlPath,
+        recentXmlFiles,
+        lineOffsets
     });
 }
 
-// 디바운스된 캐시 저장
-let saveTimeout: NodeJS.Timeout | undefined;
 function debouncedSaveCache(): void {
     if (saveTimeout) {
         clearTimeout(saveTimeout);
     }
+
     saveTimeout = setTimeout(() => {
-        saveCache();
+        void saveCache();
     }, 2000);
 }
 
-// XML 파일을 최근 목록에 추가
 function addToRecentFiles(xmlPath: string): void {
-    // 이미 있으면 제거 후 맨 앞에 추가
-    recentXmlFiles = recentXmlFiles.filter(f => f !== xmlPath);
+    recentXmlFiles = recentXmlFiles.filter(existingPath => existingPath !== xmlPath);
     recentXmlFiles.unshift(xmlPath);
-    // 최대 개수 유지
-    if (recentXmlFiles.length > MAX_RECENT_FILES) {
-        recentXmlFiles = recentXmlFiles.slice(0, MAX_RECENT_FILES);
-    }
+    recentXmlFiles = recentXmlFiles.slice(0, MAX_RECENT_FILES);
 }
 
-// 최근 파일 목록 가져오기
-function getRecentXmlFiles(): { label: string; description: string; path: string }[] {
+function getRecentXmlFiles(): Array<{ label: string; description: string; path: string }> {
     return recentXmlFiles
-        .filter(f => fs.existsSync(f))
-        .map(f => ({
-            label: path.basename(f),
-            description: path.dirname(f),
-            path: f
+        .filter(filePath => fs.existsSync(filePath))
+        .map(filePath => ({
+            label: path.basename(filePath),
+            description: path.dirname(filePath),
+            path: filePath
         }));
 }
 
-async function loadCoverage() {
-    // 최근 파일이 있으면 선택 옵션 제공
-    const recentFiles = getRecentXmlFiles();
+async function goToLine(filePath: string, line: number): Promise<void> {
+    let targetPath = filePath;
 
+    if (!fs.existsSync(filePath)) {
+        const localPath = await findLocalFilePathAsync(filePath);
+        if (!localPath) {
+            vscode.window.showWarningMessage(`File not found: ${path.basename(filePath)}`);
+            return;
+        }
+
+        targetPath = localPath;
+    }
+
+    try {
+        const document = await vscode.workspace.openTextDocument(targetPath);
+        const editor = await vscode.window.showTextDocument(document);
+        const position = new vscode.Position(line - 1, 0);
+        editor.selection = new vscode.Selection(position, position);
+        editor.revealRange(
+            new vscode.Range(position, position),
+            vscode.TextEditorRevealType.InCenter
+        );
+    } catch {
+        vscode.window.showWarningMessage(`Unable to open file: ${path.basename(targetPath)}`);
+    }
+}
+
+async function loadCoverage(): Promise<void> {
+    const recentFiles = getRecentXmlFiles();
     let xmlPath: string | undefined;
 
     if (recentFiles.length > 0) {
-        const items: (vscode.QuickPickItem & { path?: string })[] = [
-            { label: '$(folder-opened) 새 파일 선택...', description: '파일 탐색기에서 선택' },
+        const items: Array<vscode.QuickPickItem & { path?: string }> = [
+            {
+                label: '$(folder-opened) Choose another XML file...',
+                description: 'Open the file picker'
+            },
             { label: '', kind: vscode.QuickPickItemKind.Separator },
-            ...recentFiles.map(f => ({
-                label: `$(history) ${f.label}`,
-                description: f.description,
-                path: f.path
+            ...recentFiles.map(file => ({
+                label: `${file.path === currentXmlPath ? '$(check)' : '$(history)'} ${file.label}`,
+                description: file.description,
+                path: file.path
             }))
         ];
 
-        // 현재 로드된 파일 표시
-        if (currentXmlPath) {
-            const currentIdx = items.findIndex(i => i.path === currentXmlPath);
-            if (currentIdx >= 0) {
-                items[currentIdx].label = items[currentIdx].label.replace('$(history)', '$(check)');
-                items[currentIdx].description += ' (현재)';
-            }
-        }
-
         const choice = await vscode.window.showQuickPick(items, {
-            placeHolder: 'Coverage XML 파일 선택',
-            title: 'Coverage XML 로드'
+            placeHolder: 'Select a coverage XML file',
+            title: 'Load Coverage XML'
         });
 
-        if (!choice) return;
-
-        if (choice.path) {
-            xmlPath = choice.path;
-        } else {
-            // 새 파일 선택
-            const files = await vscode.window.showOpenDialog({
-                canSelectMany: false,
-                filters: { 'Coverage XML': ['xml'] },
-                title: 'Select Coverage XML File'
-            });
-            if (!files || files.length === 0) return;
-            xmlPath = files[0].fsPath;
+        if (!choice) {
+            return;
         }
+
+        xmlPath = choice.path ?? await promptForXmlFile();
     } else {
-        // 최근 파일 없으면 바로 파일 선택
-        const files = await vscode.window.showOpenDialog({
-            canSelectMany: false,
-            filters: { 'Coverage XML': ['xml'] },
-            title: 'Select Coverage XML File'
-        });
-        if (!files || files.length === 0) return;
-        xmlPath = files[0].fsPath;
+        xmlPath = await promptForXmlFile();
     }
 
-    await loadXmlFile(xmlPath);
+    if (xmlPath) {
+        await loadXmlFile(xmlPath);
+    }
 }
 
-// XML 파일 직접 로드
-async function loadXmlFile(xmlPath: string) {
+async function promptForXmlFile(): Promise<string | undefined> {
+    const files = await vscode.window.showOpenDialog({
+        canSelectMany: false,
+        filters: { 'Coverage XML': ['xml'] },
+        title: 'Select Coverage XML File'
+    });
+
+    return files?.[0]?.fsPath;
+}
+
+async function loadXmlFile(xmlPath: string): Promise<void> {
     if (!fs.existsSync(xmlPath)) {
-        vscode.window.showErrorMessage(`파일을 찾을 수 없습니다: ${xmlPath}`);
+        vscode.window.showErrorMessage(`File not found: ${xmlPath}`);
         return;
     }
 
     try {
-        await vscode.window.withProgress({
-            location: vscode.ProgressLocation.Notification,
-            title: "Loading coverage data...",
-            cancellable: false
-        }, async (progress) => {
-            progress.report({ increment: 0, message: "Parsing XML..." });
+        await vscode.window.withProgress(
+            {
+                location: vscode.ProgressLocation.Notification,
+                title: 'Loading coverage data...',
+                cancellable: false
+            },
+            async progress => {
+                progress.report({ increment: 0, message: 'Parsing XML...' });
 
-            // 이전 데이터 초기화 (캐시된 오프셋은 유지)
-            filePathMapping.clear();
+                filePathMapping.clear();
+                coverageData = parseCoverageXml(xmlPath);
+                currentXmlPath = xmlPath;
+                addToRecentFiles(xmlPath);
 
-            coverageData = parseCoverageXml(xmlPath);
-            currentXmlPath = xmlPath;
-            addToRecentFiles(xmlPath);
+                progress.report({ increment: 50, message: 'Applying highlights...' });
 
-            progress.report({ increment: 50, message: "Applying highlights..." });
+                updateStatusBar();
+                applyHighlightsToAllEditors();
 
-            // Update status bar
-            updateStatusBar();
+                treeDataProvider.setCoverageData(coverageData);
+                treeDataProvider.setCurrentXmlPath(currentXmlPath);
+                treeDataProvider.setRecentXmlFiles(recentXmlFiles);
 
-            // Apply highlights to all visible editors
-            applyHighlightsToAllEditors();
+                await saveCache();
 
-            // TreeView 업데이트
-            treeDataProvider.setCoverageData(coverageData);
-            treeDataProvider.setCurrentXmlPath(currentXmlPath);
-            treeDataProvider.setRecentXmlFiles(recentXmlFiles);
-
-            // 캐시 저장
-            await saveCache();
-
-            progress.report({ increment: 100, message: "Done!" });
-
-            const fileCount = coverageData.files.size;
-            vscode.window.showInformationMessage(
-                `Coverage loaded: ${fileCount} files, Statement: ${coverageData.summary.statementCov.toFixed(1)}%, Branch: ${coverageData.summary.branchCov.toFixed(1)}%`
-            );
-        });
+                progress.report({ increment: 100, message: 'Done' });
+                vscode.window.showInformationMessage(
+                    `Coverage loaded: ${coverageData.files.size} files, `
+                    + `Statement ${coverageData.summary.statementCov.toFixed(1)}%, `
+                    + `Branch ${coverageData.summary.branchCov.toFixed(1)}%`
+                );
+            }
+        );
     } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        vscode.window.showErrorMessage(`Failed to load coverage: ${errorMessage}`);
+        const message = error instanceof Error ? error.message : String(error);
+        vscode.window.showErrorMessage(`Failed to load coverage: ${message}`);
     }
 }
 
-function clearCoverage() {
+async function clearCoverage(): Promise<void> {
     coverageData = undefined;
+    currentXmlPath = undefined;
     lineTracker.clear();
     filePathMapping.clear();
     highlighter.clearAllHighlights();
     statusBarItem.hide();
+    treeDataProvider.setCoverageData(undefined);
+    treeDataProvider.setCurrentXmlPath(undefined);
+    await saveCache();
     vscode.window.showInformationMessage('Coverage highlights cleared');
 }
 
-async function classifyCurrentLine() {
-    const editor = vscode.window.activeTextEditor;
+async function classifyCurrentLine(): Promise<void> {
+    const editor = getActiveEditorOrWarn();
     if (!editor) {
-        vscode.window.showWarningMessage('No active editor');
         return;
     }
 
-    const line = editor.selection.active.line + 1; // 1-based
+    const line = editor.selection.active.line + 1;
     const filePath = editor.document.uri.fsPath;
-
-    // 연속된 uncovered 블록 자동 선택
     const blockLines = lineTracker.getUncoveredBlock(filePath, line);
 
     await classifyLines(filePath, blockLines);
 }
 
-async function classifySelectedLines() {
-    const editor = vscode.window.activeTextEditor;
+async function classifySelectedLines(): Promise<void> {
+    const editor = getActiveEditorOrWarn();
     if (!editor) {
-        vscode.window.showWarningMessage('No active editor');
         return;
     }
 
-    const selection = editor.selection;
-    const startLine = selection.start.line + 1;
-    const endLine = selection.end.line + 1;
+    const lines = new Set<number>();
     const filePath = editor.document.uri.fsPath;
+    const startLine = editor.selection.start.line + 1;
+    const endLine = editor.selection.end.line + 1;
 
-    // 선택된 범위의 모든 라인에 대해 연속 블록 확장
-    const allBlockLines = new Set<number>();
-    for (let i = startLine; i <= endLine; i++) {
-        const blockLines = lineTracker.getUncoveredBlock(filePath, i);
-        blockLines.forEach(line => allBlockLines.add(line));
+    for (let line = startLine; line <= endLine; line++) {
+        for (const blockLine of lineTracker.getUncoveredBlock(filePath, line)) {
+            lines.add(blockLine);
+        }
     }
 
-    const sortedLines = Array.from(allBlockLines).sort((a, b) => a - b);
-    await classifyLines(filePath, sortedLines);
+    await classifyLines(
+        filePath,
+        Array.from(lines).sort((left, right) => left - right)
+    );
 }
 
-async function classifyLines(filePath: string, lines: number[]) {
-    // 카테고리 선택
-    const categoryChoice = await vscode.window.showQuickPick([
-        { label: '문서', value: 'document' as const, description: '문서화 대상 (보고서에 포함)' },
-        { label: '주석 예정', value: 'comment-planned' as const, description: '주석 처리 예정' },
-        { label: '태울 예정', value: 'cover-planned' as const, description: '커버리지 달성 예정' }
-    ], {
-        placeHolder: '분류 카테고리를 선택하세요'
+async function classifyLines(filePath: string, lines: number[]): Promise<void> {
+    const selection = await promptForClassification(classificationManager, {
+        categoryPlaceHolder: 'Select a classification category',
+        reasonPlaceHolder: 'Select a reason'
     });
 
-    if (!categoryChoice) return;
-
-    let reasonLabel: string;
-
-    // 문서 카테고리만 사유 선택 필요
-    if (categoryChoice.value === 'document') {
-        const reasons = classificationManager.getReasons();
-        const reasonItems = [
-            ...reasons.map(r => ({ label: r.label, value: r.id })),
-            { label: '$(add) 새 사유 추가...', value: '__new__' }
-        ];
-
-        const reasonChoice = await vscode.window.showQuickPick(reasonItems, {
-            placeHolder: '사유를 선택하세요'
-        });
-
-        if (!reasonChoice) return;
-
-        if (reasonChoice.value === '__new__') {
-            const newReason = await vscode.window.showInputBox({
-                prompt: '새 사유를 입력하세요',
-                placeHolder: '예: UI 관련 코드'
-            });
-            if (!newReason) return;
-
-            await classificationManager.addReason(newReason);
-            reasonLabel = newReason;
-        } else {
-            reasonLabel = reasonChoice.label;
-        }
-    } else {
-        // 주석 예정, 태울 예정은 사유 없이 바로 분류
-        reasonLabel = '';
+    if (!selection) {
+        return;
     }
 
-    // 분류 저장
-    await classificationManager.classifyLines(filePath, lines, categoryChoice.value, reasonLabel);
-
-    const message = reasonLabel
-        ? `${lines.length}개 라인이 "${categoryChoice.label} - ${reasonLabel}"로 분류되었습니다.`
-        : `${lines.length}개 라인이 "${categoryChoice.label}"로 분류되었습니다.`;
-    vscode.window.showInformationMessage(message);
-
-    // TreeView 갱신
-    treeDataProvider.refresh();
-
-    // 캐시 저장
-    await saveCache();
+    await applyClassificationTargets(
+        toTargets(filePath, lines),
+        selection,
+        { message: buildClassificationMessage(lines.length, selection) }
+    );
 }
 
-// 슬롯 기반 빠른 분류 실행
-async function executeQuickSlot(slotNumber: number) {
+async function executeQuickSlot(slotNumber: number): Promise<void> {
     const config = vscode.workspace.getConfiguration('coverageHighlighter');
-    const slotConfig = config.get<{ category: string; reason?: string }>(`quickSlot${slotNumber}`);
+    const slotConfig = config.get<QuickSlotConfig>(`quickSlot${slotNumber}`);
 
-    if (!slotConfig || !slotConfig.category) {
-        vscode.window.showWarningMessage(`슬롯 ${slotNumber}이 설정되지 않았습니다. 설정에서 coverageHighlighter.quickSlot${slotNumber}을 설정하세요.`);
+    if (!slotConfig?.category) {
+        vscode.window.showWarningMessage(
+            `Quick slot ${slotNumber} is not configured. Set coverageHighlighter.quickSlot${slotNumber} first.`
+        );
         return;
     }
 
-    const category = slotConfig.category as 'document' | 'comment-planned' | 'cover-planned';
-    const reason = slotConfig.reason || '';
-
-    // 문서 카테고리인데 사유가 없으면 선택하도록
-    if (category === 'document' && !reason) {
-        await quickClassifyWithReasonPrompt(category);
-    } else {
-        await quickClassifyDirect(category, reason);
-    }
-}
-
-// 사유 프롬프트와 함께 빠른 분류
-async function quickClassifyWithReasonPrompt(category: 'document' | 'comment-planned' | 'cover-planned') {
-    const editor = vscode.window.activeTextEditor;
+    const editor = getActiveEditorOrWarn();
     if (!editor) {
-        vscode.window.showWarningMessage('No active editor');
         return;
     }
 
-    const line = editor.selection.active.line + 1;
     const filePath = editor.document.uri.fsPath;
+    const line = editor.selection.active.line + 1;
     const blockLines = lineTracker.getUncoveredBlock(filePath, line);
 
-    let reasonLabel = '';
+    const reason = slotConfig.reason?.trim()
+        || await promptForReason(classificationManager, slotConfig.category, 'Select a reason');
 
-    if (category === 'document') {
-        const reasons = classificationManager.getReasons();
-        if (reasons.length === 0) {
-            const newReason = await vscode.window.showInputBox({
-                prompt: '사유를 입력하세요',
-                placeHolder: '예: UI 관련 코드'
-            });
-            if (!newReason) return;
-            await classificationManager.addReason(newReason);
-            reasonLabel = newReason;
-        } else {
-            const reasonChoice = await vscode.window.showQuickPick(
-                reasons.map(r => r.label),
-                { placeHolder: '사유를 선택하세요' }
-            );
-            if (!reasonChoice) return;
-            reasonLabel = reasonChoice;
-        }
-    }
-
-    await classificationManager.classifyLines(filePath, blockLines, category, reasonLabel);
-
-    const categoryLabel = category === 'document' ? '문서' : category === 'comment-planned' ? '주석예정' : '태울예정';
-    vscode.window.showInformationMessage(`${blockLines.length}개 라인 → ${categoryLabel}`);
-
-    treeDataProvider.refresh();
-    await saveCache();
-}
-
-// 다이얼로그 없이 직접 분류
-async function quickClassifyDirect(category: 'document' | 'comment-planned' | 'cover-planned', reason: string) {
-    const editor = vscode.window.activeTextEditor;
-    if (!editor) {
-        vscode.window.showWarningMessage('No active editor');
+    if (reason === undefined) {
         return;
     }
 
-    const line = editor.selection.active.line + 1;
-    const filePath = editor.document.uri.fsPath;
-    const blockLines = lineTracker.getUncoveredBlock(filePath, line);
-
-    await classificationManager.classifyLines(filePath, blockLines, category, reason);
-
-    const categoryLabel = category === 'document' ? '문서' : category === 'comment-planned' ? '주석예정' : '태울예정';
-    const msg = reason ? `${blockLines.length}개 라인 → ${categoryLabel} (${reason})` : `${blockLines.length}개 라인 → ${categoryLabel}`;
-    vscode.window.showInformationMessage(msg);
-
-    treeDataProvider.refresh();
-    await saveCache();
-}
-
-// TreeView에서 미분류 항목 분류
-async function classifyLinesFromTree(filePath: string, startLine: number) {
-    // 해당 라인이 포함된 블록 찾기 (coverage 데이터에서)
-    const lines = [startLine]; // TreeView에서는 블록 시작 라인만 전달됨
-
-    await classifyLines(filePath, lines);
-}
-
-// TreeView에서 빠른 분류 - 사유 선택 필요한 경우 (문서)
-async function quickClassifyFromTreeWithCategory(filePath: string, startLine: number, category: 'document' | 'comment-planned' | 'cover-planned') {
-    const lines = [startLine];
-
-    let reasonLabel = '';
-
-    if (category === 'document') {
-        const reasons = classificationManager.getReasons();
-        const reasonItems = [
-            ...reasons.map(r => ({ label: r.label, value: r.label })),
-            { label: '$(add) 새 사유 추가...', value: '__new__' }
-        ];
-
-        if (reasonItems.length === 1) {
-            // 사유가 없으면 바로 입력
-            const newReason = await vscode.window.showInputBox({
-                prompt: '사유를 입력하세요',
-                placeHolder: '예: UI 관련 코드'
-            });
-            if (!newReason) return;
-            await classificationManager.addReason(newReason);
-            reasonLabel = newReason;
-        } else {
-            const reasonChoice = await vscode.window.showQuickPick(reasonItems, {
-                placeHolder: '사유를 선택하세요'
-            });
-            if (!reasonChoice) return;
-
-            if (reasonChoice.value === '__new__') {
-                const newReason = await vscode.window.showInputBox({
-                    prompt: '새 사유를 입력하세요',
-                    placeHolder: '예: UI 관련 코드'
-                });
-                if (!newReason) return;
-                await classificationManager.addReason(newReason);
-                reasonLabel = newReason;
-            } else {
-                reasonLabel = reasonChoice.value;
-            }
+    await applyClassificationTargets(
+        toTargets(filePath, blockLines),
+        {
+            category: slotConfig.category,
+            reason
+        },
+        {
+            message: buildClassificationMessage(blockLines.length, {
+                category: slotConfig.category,
+                reason
+            })
         }
+    );
+}
+
+async function classifyFromTree(item: TreeSelectionItem): Promise<void> {
+    if (!item.filePath || item.line === undefined) {
+        return;
     }
 
-    await classificationManager.classifyLines(filePath, lines, category, reasonLabel);
-
-    const categoryLabel = category === 'document' ? '문서' : category === 'comment-planned' ? '주석예정' : '태울예정';
-    const msg = reasonLabel ? `Line ${startLine} → ${categoryLabel} (${reasonLabel})` : `Line ${startLine} → ${categoryLabel}`;
-    vscode.window.showInformationMessage(msg);
-
-    treeDataProvider.hideClassifiedLine(filePath, startLine);
-    applyHighlightsToAllEditors();
-    await saveCache();
+    await classifyLines(item.filePath, item.lines ?? [item.line]);
 }
 
-// TreeView에서 빠른 분류 - 사유 없이 바로 분류 (주석예정, 태울예정)
-async function quickClassifyFromTreeDirect(filePath: string, startLine: number, category: 'document' | 'comment-planned' | 'cover-planned') {
-    const lines = [startLine];
+async function quickClassifyFromTree(
+    item: TreeSelectionItem,
+    category: ClassificationCategory
+): Promise<void> {
+    if (!item.filePath || item.line === undefined) {
+        return;
+    }
 
-    await classificationManager.classifyLines(filePath, lines, category, '');
+    const lines = item.lines ?? [item.line];
+    const reason = await promptForReason(
+        classificationManager,
+        category,
+        'Select a reason'
+    );
 
-    const categoryLabel = category === 'document' ? '문서' : category === 'comment-planned' ? '주석예정' : '태울예정';
-    vscode.window.showInformationMessage(`Line ${startLine} → ${categoryLabel}`);
+    if (reason === undefined) {
+        return;
+    }
 
-    treeDataProvider.hideClassifiedLine(filePath, startLine);
-    applyHighlightsToAllEditors();
-    await saveCache();
+    await applyClassificationTargets(
+        toTargets(item.filePath, lines),
+        { category, reason },
+        {
+            hideFromTree: true,
+            message: buildClassificationMessage(lines.length, { category, reason })
+        }
+    );
 }
 
-async function manageReasons() {
-    const reasons = classificationManager.getReasons();
+async function classifyFromTreeWithReason(
+    filePath: string,
+    line: number,
+    category: ClassificationCategory,
+    reason: string,
+    lines?: number[]
+): Promise<void> {
+    const finalReason = reason === '__new__'
+        ? await promptForNewReason(classificationManager)
+        : reason;
 
-    const items = [
-        { label: '$(add) 새 사유 추가', value: '__add__' },
-        ...reasons.map(r => ({ label: `$(trash) ${r.label}`, value: r.id, description: '삭제하려면 선택' }))
+    if (finalReason === undefined) {
+        return;
+    }
+
+    const targetLines = lines && lines.length > 0 ? lines : [line];
+    await applyClassificationTargets(
+        toTargets(filePath, targetLines),
+        { category, reason: finalReason },
+        {
+            hideFromTree: true,
+            message: buildClassificationMessage(targetLines.length, {
+                category,
+                reason: finalReason
+            })
+        }
+    );
+}
+
+async function bulkClassify(): Promise<void> {
+    const selectedItems = treeDataProvider.getTreeView()?.selection ?? [];
+    const unclassifiedItems = selectedItems.filter(
+        item => item.type === 'unclassified-line' && item.filePath
+    );
+
+    const targets = flattenTreeTargets(unclassifiedItems);
+    if (targets.length === 0) {
+        vscode.window.showWarningMessage('Select uncovered lines to classify.');
+        return;
+    }
+
+    const selection = await promptForClassification(classificationManager, {
+        categoryPlaceHolder: 'Select a category for the selected lines',
+        reasonPlaceHolder: 'Select a reason'
+    });
+
+    if (!selection) {
+        return;
+    }
+
+    await applyClassificationTargets(targets, selection, {
+        message: buildClassificationMessage(targets.length, selection)
+    });
+}
+
+async function bulkRemoveClassification(): Promise<void> {
+    const selectedItems = treeDataProvider.getTreeView()?.selection ?? [];
+    const classifiedItems = selectedItems.filter(
+        item => item.type === 'line' && item.filePath && item.line !== undefined && item.category
+    );
+
+    const targets = flattenTreeTargets(classifiedItems);
+    if (targets.length === 0) {
+        vscode.window.showWarningMessage('Select classified lines to remove.');
+        return;
+    }
+
+    const confirmation = await vscode.window.showWarningMessage(
+        `Remove classifications from ${targets.length} selected line(s)?`,
+        'Remove',
+        'Cancel'
+    );
+
+    if (confirmation !== 'Remove') {
+        return;
+    }
+
+    await classificationManager.removeClassifications(targets);
+    await refreshViewsAfterClassificationChange();
+    vscode.window.showInformationMessage(`Removed ${targets.length} classification(s).`);
+}
+
+async function bulkEditClassification(): Promise<void> {
+    const selectedItems = treeDataProvider.getTreeView()?.selection ?? [];
+    const classifiedItems = selectedItems.filter(
+        item => item.type === 'line' && item.filePath && item.line !== undefined && item.category
+    );
+
+    const targets = flattenTreeTargets(classifiedItems);
+    if (targets.length === 0) {
+        vscode.window.showWarningMessage('Select classified lines to update.');
+        return;
+    }
+
+    const selection = await promptForClassification(classificationManager, {
+        categoryPlaceHolder: 'Select a new category',
+        reasonPlaceHolder: 'Select a reason'
+    });
+
+    if (!selection) {
+        return;
+    }
+
+    await applyClassificationTargets(targets, selection, {
+        message: `Updated ${targets.length} line(s) to ${getCategoryLabel(selection.category)}`
+            + (selection.reason ? ` (${selection.reason})` : '')
+    });
+}
+
+async function removeClassification(item: TreeSelectionItem): Promise<void> {
+    if (!item.filePath || item.line === undefined) {
+        return;
+    }
+
+    await classificationManager.removeClassification(item.filePath, item.line);
+    await refreshViewsAfterClassificationChange();
+    vscode.window.showInformationMessage(`Removed the classification for line ${item.line}.`);
+}
+
+async function editClassification(item: TreeSelectionItem): Promise<void> {
+    if (!item.filePath || item.line === undefined) {
+        vscode.window.showWarningMessage('Select a classified line to update.');
+        return;
+    }
+
+    const selection = await promptForClassification(classificationManager, {
+        categoryPlaceHolder: 'Select a new category',
+        reasonPlaceHolder: 'Select a reason'
+    });
+
+    if (!selection) {
+        return;
+    }
+
+    await applyClassificationTargets(
+        [{ filePath: item.filePath, line: item.line }],
+        selection,
+        {
+            message: `Updated line ${item.line} to ${getCategoryLabel(selection.category)}`
+                + (selection.reason ? ` (${selection.reason})` : '')
+        }
+    );
+}
+
+function toggleHideClassified(): void {
+    const nextValue = !highlighter.getHideClassified();
+    highlighter.setHideClassified(nextValue);
+    treeDataProvider.setHideClassified(nextValue);
+    applyHighlightsToAllEditors();
+    treeDataProvider.refresh();
+    vscode.window.showInformationMessage(`Hide classified lines: ${nextValue ? 'ON' : 'OFF'}`);
+}
+
+async function searchFiles(): Promise<void> {
+    const query = await vscode.window.showInputBox({
+        prompt: 'Enter a file name or path to filter',
+        placeHolder: 'Example: Controller, src/main, .java',
+        value: treeDataProvider.getSearchQuery()
+    });
+
+    if (query === undefined) {
+        return;
+    }
+
+    if (query.trim() === '') {
+        treeDataProvider.clearSearch();
+        vscode.window.showInformationMessage('Search cleared.');
+        return;
+    }
+
+    treeDataProvider.setSearchQuery(query);
+    vscode.window.showInformationMessage(`Filtering files with "${query}".`);
+}
+
+function clearSearch(): void {
+    treeDataProvider.clearSearch();
+    vscode.window.showInformationMessage('Search cleared.');
+}
+
+async function sortFiles(): Promise<void> {
+    const currentSort = treeDataProvider.getSortOption();
+    const sortOptions: Array<{ label: string; value: SortOption; description?: string }> = [
+        { label: 'File Name (A-Z)', value: 'name-asc', description: currentSort === 'name-asc' ? 'Current' : '' },
+        { label: 'File Name (Z-A)', value: 'name-desc', description: currentSort === 'name-desc' ? 'Current' : '' },
+        { label: 'Unclassified Count (Low to High)', value: 'count-asc', description: currentSort === 'count-asc' ? 'Current' : '' },
+        { label: 'Unclassified Count (High to Low)', value: 'count-desc', description: currentSort === 'count-desc' ? 'Current' : '' },
+        { label: 'Path (A-Z)', value: 'path-asc', description: currentSort === 'path-asc' ? 'Current' : '' },
+        { label: 'Path (Z-A)', value: 'path-desc', description: currentSort === 'path-desc' ? 'Current' : '' }
     ];
 
-    const choice = await vscode.window.showQuickPick(items, {
-        placeHolder: '사유 관리'
+    const choice = await vscode.window.showQuickPick(sortOptions, {
+        placeHolder: 'Select a sort order'
     });
 
-    if (!choice) return;
-
-    if (choice.value === '__add__') {
-        const newReason = await vscode.window.showInputBox({
-            prompt: '새 사유를 입력하세요',
-            placeHolder: '예: UI 관련 코드'
-        });
-        if (newReason) {
-            await classificationManager.addReason(newReason);
-            vscode.window.showInformationMessage(`사유 "${newReason}"이(가) 추가되었습니다.`);
-        }
-    } else {
-        const confirm = await vscode.window.showWarningMessage(
-            `"${choice.label.replace('$(trash) ', '')}" 사유를 삭제하시겠습니까?`,
-            '삭제', '취소'
-        );
-        if (confirm === '삭제') {
-            await classificationManager.removeReason(choice.value);
-            vscode.window.showInformationMessage('사유가 삭제되었습니다.');
-        }
+    if (!choice) {
+        return;
     }
+
+    treeDataProvider.setSortOption(choice.value);
+    vscode.window.showInformationMessage(`Sort applied: ${choice.label}`);
 }
 
-async function generateReport() {
-    const reportType = await vscode.window.showQuickPick([
-        { label: '문서용 보고서', value: 'document' },
-        { label: '전체 보고서', value: 'full' }
-    ], {
-        placeHolder: '보고서 유형을 선택하세요'
-    });
+async function clearAllClassifications(): Promise<void> {
+    const confirmation = await vscode.window.showWarningMessage(
+        'Remove all saved classifications? This cannot be undone.',
+        'Remove All',
+        'Cancel'
+    );
 
-    if (!reportType) return;
-
-    let report: string;
-    if (reportType.value === 'document') {
-        report = classificationManager.generateDocumentReport();
-    } else {
-        report = classificationManager.generateFullReport();
+    if (confirmation !== 'Remove All') {
+        return;
     }
 
-    // 새 문서에 보고서 표시
-    const doc = await vscode.workspace.openTextDocument({
+    await classificationManager.clearAll();
+    await refreshViewsAfterClassificationChange();
+    vscode.window.showInformationMessage('All classifications were removed.');
+}
+
+async function manageReasons(): Promise<void> {
+    const reasons = classificationManager.getReasons();
+    const choice = await vscode.window.showQuickPick(
+        [
+            { label: '$(add) Add a reason', value: '__add__' },
+            ...reasons.map(reason => ({
+                label: `$(trash) ${reason.label}`,
+                value: reason.id,
+                description: 'Remove this reason'
+            }))
+        ],
+        { placeHolder: 'Manage document reasons' }
+    );
+
+    if (!choice) {
+        return;
+    }
+
+    if (choice.value === '__add__') {
+        const newReason = await promptForNewReason(classificationManager);
+        if (newReason) {
+            vscode.window.showInformationMessage(`Added reason "${newReason}".`);
+        }
+        return;
+    }
+
+    const label = choice.label.replace('$(trash) ', '');
+    const confirmation = await vscode.window.showWarningMessage(
+        `Remove reason "${label}"? Existing classifications keep their current labels.`,
+        'Remove',
+        'Cancel'
+    );
+
+    if (confirmation !== 'Remove') {
+        return;
+    }
+
+    await classificationManager.removeReason(choice.value);
+    vscode.window.showInformationMessage(`Removed reason "${label}".`);
+}
+
+async function generateReport(): Promise<void> {
+    const reportType = await vscode.window.showQuickPick(
+        [
+            { label: 'Document Report', value: 'document' },
+            { label: 'Full Report', value: 'full' }
+        ],
+        { placeHolder: 'Select a report type' }
+    );
+
+    if (!reportType) {
+        return;
+    }
+
+    const report = reportType.value === 'document'
+        ? classificationManager.generateDocumentReport()
+        : classificationManager.generateFullReport();
+
+    const document = await vscode.workspace.openTextDocument({
         content: report,
         language: 'markdown'
     });
-    await vscode.window.showTextDocument(doc);
+
+    await vscode.window.showTextDocument(document);
 }
 
-async function showClassifications() {
+async function showClassifications(): Promise<void> {
     const panel = vscode.window.createWebviewPanel(
         'coverageClassifications',
         'Coverage Classifications',
         vscode.ViewColumn.Beside,
-        { enableScripts: true }
+        { enableScripts: false }
     );
 
-    const classifications = classificationManager.getAllClassifications();
-
-    let tableHtml = '';
-    for (const [key, items] of classifications.entries()) {
-        const [category, reason] = key.split(':');
-        const categoryLabel = category === 'document' ? '문서' : category === 'comment-planned' ? '주석 예정' : '태울 예정';
-
-        // 파일별 그룹화
-        const byFile = new Map<string, number[]>();
-        for (const item of items) {
-            if (!byFile.has(item.fileName)) {
-                byFile.set(item.fileName, []);
-            }
-            byFile.get(item.fileName)!.push(item.line);
-        }
-
-        tableHtml += `<h3>${categoryLabel} - ${reason}</h3>`;
-        tableHtml += `<table>
-            <thead><tr><th>번호</th><th>파일명</th><th>코드위치</th><th>비고</th></tr></thead>
-            <tbody>`;
-
-        let index = 1;
-        for (const [fileName, lines] of byFile.entries()) {
-            lines.sort((a, b) => a - b);
-            tableHtml += `<tr>
-                <td>${index}</td>
-                <td>${fileName}</td>
-                <td>${lines.join(' ')}</td>
-                <td></td>
-            </tr>`;
-            index++;
-        }
-
-        tableHtml += `</tbody></table>`;
-    }
-
-    if (tableHtml === '') {
-        tableHtml = '<p>분류된 항목이 없습니다.</p>';
-    }
-
-    panel.webview.html = `
-        <!DOCTYPE html>
-        <html lang="ko">
-        <head>
-            <meta charset="UTF-8">
-            <style>
-                body { font-family: var(--vscode-font-family); padding: 20px; color: var(--vscode-foreground); background: var(--vscode-editor-background); }
-                table { width: 100%; border-collapse: collapse; margin: 10px 0 20px; }
-                th, td { padding: 8px; text-align: left; border: 1px solid var(--vscode-panel-border); }
-                th { background: var(--vscode-editor-inactiveSelectionBackground); }
-                h3 { margin-top: 20px; color: var(--vscode-textLink-foreground); }
-            </style>
-        </head>
-        <body>
-            <h1>분류된 미달성 코드</h1>
-            ${tableHtml}
-        </body>
-        </html>
-    `;
+    panel.webview.html = renderClassificationsHtml(
+        classificationManager.getAllClassifications()
+    );
 }
 
-function showSummary() {
+function showSummary(): void {
     if (!coverageData) {
-        vscode.window.showWarningMessage('No coverage data loaded. Use "Coverage: Load Coverage XML" first.');
+        vscode.window.showWarningMessage(
+            'No coverage data loaded. Run "Coverage: Load Coverage XML" first.'
+        );
         return;
     }
 
-    const summary = coverageData.summary;
     const panel = vscode.window.createWebviewPanel(
         'coverageSummary',
         'Coverage Summary',
@@ -1184,148 +817,86 @@ function showSummary() {
         {}
     );
 
-    // Create file list HTML
-    const fileListHtml = Array.from(coverageData.files.entries())
-        .map(([fileName, coverage]) => {
-            const covered = coverage.coveredLines.size;
-            const uncovered = coverage.uncoveredLines.size;
-            const total = covered + uncovered;
-            const percentage = total > 0 ? (covered / total * 100).toFixed(1) : '0.0';
-            const shortName = path.basename(fileName);
-            return `
-                <tr>
-                    <td title="${fileName}">${shortName}</td>
-                    <td>${covered}</td>
-                    <td>${uncovered}</td>
-                    <td>${percentage}%</td>
-                </tr>
-            `;
-        })
-        .join('');
-
-    panel.webview.html = `
-        <!DOCTYPE html>
-        <html lang="ko">
-        <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>Coverage Summary</title>
-            <style>
-                body {
-                    font-family: var(--vscode-font-family);
-                    padding: 20px;
-                    color: var(--vscode-foreground);
-                    background-color: var(--vscode-editor-background);
-                }
-                .summary-box {
-                    display: flex;
-                    gap: 20px;
-                    margin-bottom: 30px;
-                }
-                .metric {
-                    background: var(--vscode-editor-inactiveSelectionBackground);
-                    padding: 15px 25px;
-                    border-radius: 8px;
-                    text-align: center;
-                }
-                .metric-value {
-                    font-size: 2em;
-                    font-weight: bold;
-                    color: var(--vscode-textLink-foreground);
-                }
-                .metric-label {
-                    font-size: 0.9em;
-                    opacity: 0.8;
-                }
-                table {
-                    width: 100%;
-                    border-collapse: collapse;
-                    margin-top: 20px;
-                }
-                th, td {
-                    padding: 8px 12px;
-                    text-align: left;
-                    border-bottom: 1px solid var(--vscode-panel-border);
-                }
-                th {
-                    background: var(--vscode-editor-inactiveSelectionBackground);
-                }
-                tr:hover {
-                    background: var(--vscode-list-hoverBackground);
-                }
-                .legend {
-                    margin-top: 20px;
-                    display: flex;
-                    gap: 20px;
-                }
-                .legend-item {
-                    display: flex;
-                    align-items: center;
-                    gap: 8px;
-                }
-                .legend-color {
-                    width: 20px;
-                    height: 20px;
-                    border-radius: 3px;
-                }
-                .covered { background: rgba(0, 255, 0, 0.5); }
-                .uncovered { background: rgba(255, 0, 0, 0.5); }
-                .partial { background: rgba(255, 255, 0, 0.5); }
-            </style>
-        </head>
-        <body>
-            <h1>Coverage Summary</h1>
-
-            <div class="summary-box">
-                <div class="metric">
-                    <div class="metric-value">${summary.statementCov.toFixed(1)}%</div>
-                    <div class="metric-label">Statement Coverage</div>
-                </div>
-                <div class="metric">
-                    <div class="metric-value">${summary.branchCov.toFixed(1)}%</div>
-                    <div class="metric-label">Branch Coverage</div>
-                </div>
-                <div class="metric">
-                    <div class="metric-value">${coverageData.files.size}</div>
-                    <div class="metric-label">Files</div>
-                </div>
-            </div>
-
-            <div class="legend">
-                <div class="legend-item">
-                    <div class="legend-color covered"></div>
-                    <span>Covered (녹색)</span>
-                </div>
-                <div class="legend-item">
-                    <div class="legend-color uncovered"></div>
-                    <span>Uncovered (적색)</span>
-                </div>
-                <div class="legend-item">
-                    <div class="legend-color partial"></div>
-                    <span>Partial (황색)</span>
-                </div>
-            </div>
-
-            <h2>Files</h2>
-            <table>
-                <thead>
-                    <tr>
-                        <th>File</th>
-                        <th>Covered Lines</th>
-                        <th>Uncovered Lines</th>
-                        <th>Coverage</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    ${fileListHtml}
-                </tbody>
-            </table>
-        </body>
-        </html>
-    `;
+    panel.webview.html = renderCoverageSummaryHtml(coverageData);
 }
 
-function applyHighlightsToEditor(editor: vscode.TextEditor) {
+function getActiveEditorOrWarn(): vscode.TextEditor | undefined {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) {
+        vscode.window.showWarningMessage('No active editor.');
+    }
+    return editor;
+}
+
+function toTargets(filePath: string, lines: number[]): ClassificationTarget[] {
+    return lines.map(line => ({ filePath, line }));
+}
+
+function flattenTreeTargets(items: readonly TreeSelectionItem[]): ClassificationTarget[] {
+    return items.flatMap(item => {
+        if (!item.filePath) {
+            return [];
+        }
+
+        const lines = item.lines && item.lines.length > 0
+            ? item.lines
+            : item.line !== undefined
+                ? [item.line]
+                : [];
+
+        return lines.map(line => ({
+            filePath: item.filePath!,
+            line
+        }));
+    });
+}
+
+async function applyClassificationTargets(
+    targets: ClassificationTarget[],
+    selection: ClassificationSelection,
+    options: {
+        hideFromTree?: boolean;
+        message?: string;
+    } = {}
+): Promise<void> {
+    if (targets.length === 0) {
+        return;
+    }
+
+    await classificationManager.classifyTargets(
+        targets,
+        selection.category,
+        selection.reason
+    );
+
+    if (options.hideFromTree) {
+        for (const target of targets) {
+            treeDataProvider.hideClassifiedLine(target.filePath, target.line);
+        }
+    }
+
+    await refreshViewsAfterClassificationChange();
+
+    if (options.message) {
+        vscode.window.showInformationMessage(options.message);
+    }
+}
+
+async function refreshViewsAfterClassificationChange(): Promise<void> {
+    treeDataProvider.refresh();
+    applyHighlightsToAllEditors();
+    await saveCache();
+}
+
+function buildClassificationMessage(
+    lineCount: number,
+    selection: ClassificationSelection
+): string {
+    return `${lineCount} line(s) classified as ${getCategoryLabel(selection.category)}`
+        + (selection.reason ? ` (${selection.reason})` : '');
+}
+
+function applyHighlightsToEditor(editor: vscode.TextEditor): void {
     if (!coverageData) {
         return;
     }
@@ -1333,65 +904,70 @@ function applyHighlightsToEditor(editor: vscode.TextEditor) {
     const filePath = editor.document.uri.fsPath;
     const coverage = findMatchingCoverage(filePath, coverageData.files);
 
-    if (coverage) {
-        // 캐시된 오프셋 적용
-        const adjustedCoverage = lineTracker.applyOffsetsToFile(filePath, coverage);
-
-        // LineTracker에 등록
-        lineTracker.registerFile(filePath, {
-            coveredLines: adjustedCoverage.coveredLines,
-            uncoveredLines: adjustedCoverage.uncoveredLines,
-            partialCoveredLines: adjustedCoverage.partialCoveredLines
-        });
-
-        // 경로 매핑 저장
-        filePathMapping.set(filePath, coverage.fileName);
-
-        highlighter.applyHighlights(editor, adjustedCoverage);
-    } else {
+    if (!coverage) {
         highlighter.clearHighlights(editor);
+        return;
     }
+
+    const adjustedCoverage = lineTracker.applyOffsetsToFile(filePath, coverage);
+    lineTracker.registerFile(filePath, {
+        coveredLines: adjustedCoverage.coveredLines,
+        uncoveredLines: adjustedCoverage.uncoveredLines,
+        partialCoveredLines: adjustedCoverage.partialCoveredLines
+    });
+
+    filePathMapping.set(filePath, coverage.fileName);
+    highlighter.applyHighlights(editor, adjustedCoverage);
 }
 
-function applyHighlightsToEditorWithTracker(editor: vscode.TextEditor) {
+function applyHighlightsToEditorWithTracker(editor: vscode.TextEditor): void {
     const filePath = editor.document.uri.fsPath;
     const tracked = lineTracker.getTrackedLines(filePath);
 
-    if (tracked) {
-        // 추적된 라인 정보로 하이라이트 적용
-        const coverage: FileCoverage = {
-            fileName: filePathMapping.get(filePath) || filePath,
-            coveredLines: tracked.coveredLines,
-            uncoveredLines: tracked.uncoveredLines,
-            partialCoveredLines: tracked.partialCoveredLines
-        };
-        highlighter.applyHighlights(editor, coverage);
+    if (!tracked) {
+        return;
     }
+
+    const coverage: FileCoverage = {
+        fileName: filePathMapping.get(filePath) || filePath,
+        coveredLines: tracked.coveredLines,
+        uncoveredLines: tracked.uncoveredLines,
+        partialCoveredLines: tracked.partialCoveredLines
+    };
+
+    highlighter.applyHighlights(editor, coverage);
 }
 
-function applyHighlightsToAllEditors() {
+function applyHighlightsToAllEditors(): void {
     for (const editor of vscode.window.visibleTextEditors) {
         applyHighlightsToEditor(editor);
     }
 }
 
-function updateStatusBar() {
+function updateStatusBar(): void {
     if (!coverageData) {
         statusBarItem.hide();
         return;
     }
 
     statusBarItem.text = `$(beaker) Coverage: ${coverageData.summary.statementCov.toFixed(1)}%`;
-    statusBarItem.tooltip = `Statement: ${coverageData.summary.statementCov.toFixed(1)}% | Branch: ${coverageData.summary.branchCov.toFixed(1)}%\nClick for details`;
+    statusBarItem.tooltip =
+        `Statement: ${coverageData.summary.statementCov.toFixed(1)}% | `
+        + `Branch: ${coverageData.summary.branchCov.toFixed(1)}%\nClick for details`;
     statusBarItem.show();
 }
 
-export function deactivate() {
+export function deactivate(): void {
+    if (saveTimeout) {
+        clearTimeout(saveTimeout);
+    }
+
     if (highlighter) {
         highlighter.dispose();
     }
+
     if (lineTracker) {
-        saveCache();
+        void saveCache();
         lineTracker.clear();
     }
 }

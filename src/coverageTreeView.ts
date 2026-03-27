@@ -1,51 +1,73 @@
-import * as vscode from 'vscode';
 import * as path from 'path';
-import { CoverageData, FileCoverage } from './coverageParser';
+import * as vscode from 'vscode';
 import { ClassificationManager, ClassifiedLine } from './classificationManager';
+import { ClassificationCategory, getCategoryLabel } from './classification';
+import { CoverageData, FileCoverage } from './coverageParser';
 import { LineTracker } from './lineTracker';
 
-type TreeItemType = 'root' | 'category' | 'reason' | 'file' | 'line' | 'action' | 'unclassified-file' | 'unclassified-line' | 'classify-option' | 'recent-xml';
+type TreeItemType =
+    | 'root'
+    | 'category'
+    | 'reason'
+    | 'file'
+    | 'line'
+    | 'action'
+    | 'unclassified-file'
+    | 'unclassified-line'
+    | 'classify-option'
+    | 'recent-xml';
+
+type RootItemKind = 'actions' | 'unclassified' | 'classified';
 
 interface TreeItemData {
     type: TreeItemType;
     label: string;
-    category?: 'document' | 'comment-planned' | 'cover-planned';
+    rootKind?: RootItemKind;
+    category?: ClassificationCategory;
     reason?: string;
     filePath?: string;
     line?: number;
-    lines?: number[];  // 블록의 모든 라인 (연속 라인 지원)
+    lines?: number[];
     command?: string;
     isUnclassified?: boolean;
     xmlPath?: string;
     isCurrent?: boolean;
 }
 
-// 정렬 옵션
-export type SortOption = 'name-asc' | 'name-desc' | 'count-asc' | 'count-desc' | 'path-asc' | 'path-desc';
+interface SortableFileItem {
+    item: TreeItemData;
+    count: number;
+    fileName: string;
+    filePath: string;
+}
+
+export type SortOption =
+    | 'name-asc'
+    | 'name-desc'
+    | 'count-asc'
+    | 'count-desc'
+    | 'path-asc'
+    | 'path-desc';
 
 export class CoverageTreeDataProvider implements vscode.TreeDataProvider<TreeItemData> {
-    private _onDidChangeTreeData: vscode.EventEmitter<TreeItemData | undefined | null | void> = new vscode.EventEmitter<TreeItemData | undefined | null | void>();
-    readonly onDidChangeTreeData: vscode.Event<TreeItemData | undefined | null | void> = this._onDidChangeTreeData.event;
+    private readonly onDidChangeTreeDataEmitter =
+        new vscode.EventEmitter<TreeItemData | undefined | null | void>();
+
+    readonly onDidChangeTreeData = this.onDidChangeTreeDataEmitter.event;
 
     private coverageData: CoverageData | undefined;
-    private classificationManager: ClassificationManager;
-    private lineTracker: LineTracker | undefined;
-    private hideClassified: boolean = false;
+    private readonly classificationManager: ClassificationManager;
+    private hideClassified = false;
     private treeView: vscode.TreeView<TreeItemData> | undefined;
-    private recentlyClassifiedLines: Set<string> = new Set();
     private recentXmlFiles: string[] = [];
     private currentXmlPath: string | undefined;
-    private expandedFilePath: string | undefined;
-
-    // 검색 및 정렬 상태
-    private searchQuery: string = '';
+    private searchQuery = '';
     private sortOption: SortOption = 'name-asc';
 
     constructor(classificationManager: ClassificationManager) {
         this.classificationManager = classificationManager;
     }
 
-    // 검색 필터 설정
     setSearchQuery(query: string): void {
         this.searchQuery = query.toLowerCase().trim();
         this.refresh();
@@ -60,7 +82,6 @@ export class CoverageTreeDataProvider implements vscode.TreeDataProvider<TreeIte
         this.refresh();
     }
 
-    // 정렬 옵션 설정
     setSortOption(option: SortOption): void {
         this.sortOption = option;
         this.refresh();
@@ -90,79 +111,54 @@ export class CoverageTreeDataProvider implements vscode.TreeDataProvider<TreeIte
         this.hideClassified = hide;
     }
 
-    setLineTracker(lineTracker: LineTracker): void {
-        this.lineTracker = lineTracker;
+    setLineTracker(_lineTracker: LineTracker): void {
+        // Kept for compatibility with the existing extension wiring.
     }
 
     refresh(): void {
-        this.recentlyClassifiedLines.clear();
-        this._onDidChangeTreeData.fire();
+        this.onDidChangeTreeDataEmitter.fire();
     }
 
-    // 분류된 라인 숨기기 (트리 갱신 후 다시 펼침)
-    hideClassifiedLine(filePath: string, line: number): void {
-        const key = `${filePath}:${line}`;
-        this.recentlyClassifiedLines.add(key);
-        this.expandedFilePath = filePath;
-        
-        // 트리 갱신
-        this._onDidChangeTreeData.fire();
-        
-        // 갱신 후 파일 아이템을 다시 찾아서 펼침
+    hideClassifiedLine(filePath: string, _line: number): void {
+        this.onDidChangeTreeDataEmitter.fire();
+
         setTimeout(() => {
             const fileItem = this.findUnclassifiedFileItem(filePath);
             if (fileItem && this.treeView) {
-                this.treeView.reveal(fileItem, { expand: true, select: false });
+                void this.treeView.reveal(fileItem, { expand: true, select: false });
             }
         }, 100);
-    }
-
-    private findUnclassifiedFileItem(filePath: string): TreeItemData | undefined {
-        if (!this.coverageData) return undefined;
-        
-        for (const [fileName, fileCoverage] of this.coverageData.files) {
-            if (fileCoverage.fileName === filePath) {
-                const unclassifiedLines = this.getUnclassifiedLinesForFile(fileName, fileCoverage);
-                if (unclassifiedLines.length > 0) {
-                    return {
-                        type: 'unclassified-file',
-                        label: `${path.basename(fileName)} (${unclassifiedLines.length})`,
-                        filePath: fileCoverage.fileName
-                    };
-                }
-            }
-        }
-        return undefined;
-    }
-
-    getParent(element: TreeItemData): TreeItemData | undefined {
-        switch (element.type) {
-            case 'unclassified-file':
-                return { type: 'root', label: `미분류 (${this.getUnclassifiedCount()})` };
-            case 'unclassified-line':
-                if (element.filePath) {
-                    return this.findUnclassifiedFileItem(element.filePath);
-                }
-                return undefined;
-            case 'classify-option':
-                if (element.filePath && element.line !== undefined) {
-                    return {
-                        type: 'unclassified-line',
-                        label: `Line ${element.line}`,
-                        filePath: element.filePath,
-                        line: element.line,
-                        isUnclassified: true
-                    };
-                }
-                return undefined;
-            default:
-                return undefined;
-        }
     }
 
     setCoverageData(data: CoverageData | undefined): void {
         this.coverageData = data;
         this.refresh();
+    }
+
+    getParent(element: TreeItemData): TreeItemData | undefined {
+        switch (element.type) {
+            case 'unclassified-file':
+                return this.createUnclassifiedRootItem();
+            case 'unclassified-line':
+                return element.filePath
+                    ? this.findUnclassifiedFileItem(element.filePath)
+                    : undefined;
+            case 'classify-option':
+                if (!element.filePath || element.line === undefined) {
+                    return undefined;
+                }
+
+                return {
+                    type: 'unclassified-line',
+                    label: this.buildBlockLabel(element.lines ?? [element.line]),
+                    filePath: element.filePath,
+                    line: element.line,
+                    lines: element.lines,
+                    isUnclassified: true
+                };
+            default:
+                return undefined;
+        }
     }
 
     getTreeItem(element: TreeItemData): vscode.TreeItem {
@@ -171,18 +167,16 @@ export class CoverageTreeDataProvider implements vscode.TreeDataProvider<TreeIte
         switch (element.type) {
             case 'root':
                 treeItem.collapsibleState = vscode.TreeItemCollapsibleState.Expanded;
-                treeItem.iconPath = new vscode.ThemeIcon('folder');
+                treeItem.iconPath = new vscode.ThemeIcon(
+                    element.rootKind === 'actions' ? 'tools' :
+                        element.rootKind === 'classified' ? 'checklist' :
+                            'warning'
+                );
                 break;
 
             case 'category':
                 treeItem.collapsibleState = vscode.TreeItemCollapsibleState.Collapsed;
-                if (element.category === 'document') {
-                    treeItem.iconPath = new vscode.ThemeIcon('file-text');
-                } else if (element.category === 'comment-planned') {
-                    treeItem.iconPath = new vscode.ThemeIcon('comment');
-                } else {
-                    treeItem.iconPath = new vscode.ThemeIcon('flame');
-                }
+                treeItem.iconPath = this.getCategoryIcon(element.category!);
                 break;
 
             case 'reason':
@@ -207,11 +201,9 @@ export class CoverageTreeDataProvider implements vscode.TreeDataProvider<TreeIte
                         title: 'Go to Line',
                         arguments: [element.filePath, element.line]
                     };
-                    // 분류된 항목인 경우 contextValue 설정 (삭제 가능하도록)
                     if (element.category) {
                         treeItem.contextValue = 'classifiedLine';
                     }
-                    // 미분류 항목인 경우 contextValue 설정 (분류 가능하도록)
                     if (element.isUnclassified) {
                         treeItem.contextValue = 'unclassifiedLine';
                     }
@@ -229,7 +221,7 @@ export class CoverageTreeDataProvider implements vscode.TreeDataProvider<TreeIte
             case 'unclassified-line':
                 treeItem.collapsibleState = vscode.TreeItemCollapsibleState.Collapsed;
                 treeItem.iconPath = new vscode.ThemeIcon('debug-stackframe');
-                treeItem.contextValue = 'unclassifiedLine';  // 다중 선택 지원
+                treeItem.contextValue = 'unclassifiedLine';
                 if (element.filePath && element.line) {
                     treeItem.command = {
                         command: 'coverage-highlighter.goToLine',
@@ -241,18 +233,18 @@ export class CoverageTreeDataProvider implements vscode.TreeDataProvider<TreeIte
 
             case 'classify-option':
                 treeItem.collapsibleState = vscode.TreeItemCollapsibleState.None;
-                if (element.category === 'document') {
-                    treeItem.iconPath = new vscode.ThemeIcon('file-text');
-                } else if (element.category === 'comment-planned') {
-                    treeItem.iconPath = new vscode.ThemeIcon('comment');
-                } else {
-                    treeItem.iconPath = new vscode.ThemeIcon('flame');
-                }
+                treeItem.iconPath = this.getCategoryIcon(element.category!);
                 if (element.filePath && element.line !== undefined && element.category) {
                     treeItem.command = {
                         command: 'coverage-highlighter.classifyFromTreeWithReason',
                         title: 'Classify',
-                        arguments: [element.filePath, element.line, element.category, element.reason || '', element.lines]
+                        arguments: [
+                            element.filePath,
+                            element.line,
+                            element.category,
+                            element.reason || '',
+                            element.lines
+                        ]
                     };
                 }
                 break;
@@ -270,12 +262,8 @@ export class CoverageTreeDataProvider implements vscode.TreeDataProvider<TreeIte
 
             case 'recent-xml':
                 treeItem.collapsibleState = vscode.TreeItemCollapsibleState.None;
-                if (element.isCurrent) {
-                    treeItem.iconPath = new vscode.ThemeIcon('check');
-                    treeItem.description = '(현재)';
-                } else {
-                    treeItem.iconPath = new vscode.ThemeIcon('file-code');
-                }
+                treeItem.iconPath = new vscode.ThemeIcon(element.isCurrent ? 'check' : 'file-code');
+                treeItem.description = element.isCurrent ? '(current)' : undefined;
                 if (element.xmlPath) {
                     treeItem.command = {
                         command: 'coverage-highlighter.loadRecentXml',
@@ -292,18 +280,19 @@ export class CoverageTreeDataProvider implements vscode.TreeDataProvider<TreeIte
 
     getChildren(element?: TreeItemData): Thenable<TreeItemData[]> {
         if (!element) {
-            // Root level
             return Promise.resolve(this.getRootItems());
         }
 
         switch (element.type) {
             case 'root':
-                if (element.label === '분류된 항목') {
-                    return Promise.resolve(this.getCategoryItems());
-                } else if (element.label === '도구') {
+                if (element.rootKind === 'actions') {
                     return Promise.resolve(this.getActionItems());
-                } else if (element.label.startsWith('미분류') || element.label.startsWith('🔍')) {
+                }
+                if (element.rootKind === 'unclassified') {
                     return Promise.resolve(this.getUnclassifiedFileItems());
+                }
+                if (element.rootKind === 'classified') {
+                    return Promise.resolve(this.getCategoryItems());
                 }
                 break;
 
@@ -314,33 +303,48 @@ export class CoverageTreeDataProvider implements vscode.TreeDataProvider<TreeIte
                 return Promise.resolve(this.getFileItems(element.category!, element.reason!));
 
             case 'file':
-                return Promise.resolve(this.getLineItems(element.category!, element.reason!, element.filePath!));
+                return Promise.resolve(this.getLineItems(
+                    element.category!,
+                    element.reason!,
+                    element.filePath!
+                ));
 
             case 'unclassified-file':
                 return Promise.resolve(this.getUnclassifiedLineItems(element.filePath!));
 
             case 'unclassified-line':
-                return Promise.resolve(this.getClassifyOptions(element.filePath!, element.line!, element.lines));
+                return Promise.resolve(this.getClassifyOptions(
+                    element.filePath!,
+                    element.line!,
+                    element.lines
+                ));
         }
 
         return Promise.resolve([]);
     }
 
     private getRootItems(): TreeItemData[] {
-        const unclassifiedCount = this.getUnclassifiedCount();
-        const items: TreeItemData[] = [
-            { type: 'root', label: '도구' }
+        return [
+            { type: 'root', rootKind: 'actions', label: 'Actions' },
+            this.createUnclassifiedRootItem(),
+            { type: 'root', rootKind: 'classified', label: 'Classified Items' }
         ];
+    }
 
-        // 검색 중일 때 검색 상태 표시
-        if (this.searchQuery) {
-            items.push({ type: 'root', label: `🔍 "${this.searchQuery}" 검색 중 (${unclassifiedCount}개 일치)` });
-        } else {
-            items.push({ type: 'root', label: `미분류 (${unclassifiedCount})` });
-        }
+    private createUnclassifiedRootItem(): TreeItemData {
+        const count = this.getUnclassifiedCount();
 
-        items.push({ type: 'root', label: '분류된 항목' });
-        return items;
+        return {
+            type: 'root',
+            rootKind: 'unclassified',
+            label: this.searchQuery
+                ? `Search "${this.searchQuery}" (${count} matches)`
+                : `Unclassified (${count})`
+        };
+    }
+
+    private findUnclassifiedFileItem(filePath: string): TreeItemData | undefined {
+        return this.getUnclassifiedFileItems().find(item => item.filePath === filePath);
     }
 
     private getUnclassifiedCount(): number {
@@ -350,45 +354,36 @@ export class CoverageTreeDataProvider implements vscode.TreeDataProvider<TreeIte
 
         let count = 0;
         for (const [fileName, fileCoverage] of this.coverageData.files) {
-            // 검색 필터 적용
             if (this.searchQuery && !this.matchesSearch(fileName, fileCoverage.fileName)) {
                 continue;
             }
-            const uncoveredLines = this.getUnclassifiedLinesForFile(fileName, fileCoverage);
-            count += uncoveredLines.length;
+
+            count += this.getUnclassifiedLinesForFile(fileCoverage).length;
         }
+
         return count;
     }
 
-    // 검색어와 일치하는지 확인
     private matchesSearch(fileName: string, filePath: string): boolean {
         if (!this.searchQuery) {
             return true;
         }
-        const query = this.searchQuery;
-        const baseName = path.basename(fileName).toLowerCase();
-        const fullPath = filePath.toLowerCase();
-        const shortName = fileName.toLowerCase();
 
-        // 파일명, 경로, 전체 경로에서 검색
-        return baseName.includes(query) ||
-               shortName.includes(query) ||
-               fullPath.includes(query);
+        const query = this.searchQuery;
+        return path.basename(fileName).toLowerCase().includes(query)
+            || fileName.toLowerCase().includes(query)
+            || filePath.toLowerCase().includes(query);
     }
 
-    private getUnclassifiedLinesForFile(fileName: string, fileCoverage: FileCoverage): number[] {
-        // uncovered + partial 라인 수집
-        const allUncovered = new Set<number>([
+    private getUnclassifiedLinesForFile(fileCoverage: FileCoverage): number[] {
+        const unclassifiedLines: number[] = [];
+        const uncoveredLines = new Set<number>([
             ...fileCoverage.uncoveredLines,
             ...fileCoverage.partialCoveredLines
         ]);
 
-        // 분류된 라인 제외
-        const unclassifiedLines: number[] = [];
-        for (const line of allUncovered) {
-            // fileCoverage.fileName이 coverage XML의 경로이므로 이를 사용해 분류 확인
-            const isClassified = this.classificationManager.isClassified(fileCoverage.fileName, line);
-            if (!isClassified) {
+        for (const line of uncoveredLines) {
+            if (!this.classificationManager.isClassified(fileCoverage.fileName, line)) {
                 unclassifiedLines.push(line);
             }
         }
@@ -397,12 +392,10 @@ export class CoverageTreeDataProvider implements vscode.TreeDataProvider<TreeIte
     }
 
     private getActionItems(): TreeItemData[] {
-        const hideLabel = this.hideClassified ? '분류된 항목 보이기' : '분류된 항목 숨기기';
         const items: TreeItemData[] = [
-            { type: 'action', label: 'XML 로드', command: 'coverage-highlighter.loadCoverage' }
+            { type: 'action', label: 'Load XML', command: 'coverage-highlighter.loadCoverage' }
         ];
 
-        // 최근 XML 파일 목록 추가
         for (const xmlPath of this.recentXmlFiles) {
             items.push({
                 type: 'recent-xml',
@@ -413,93 +406,98 @@ export class CoverageTreeDataProvider implements vscode.TreeDataProvider<TreeIte
         }
 
         items.push(
-            { type: 'action', label: hideLabel, command: 'coverage-highlighter.toggleHideClassified' },
-            { type: 'action', label: '사유 관리', command: 'coverage-highlighter.manageReasons' },
-            { type: 'action', label: '보고서 생성', command: 'coverage-highlighter.generateReport' }
+            {
+                type: 'action',
+                label: this.hideClassified ? 'Show Classified' : 'Hide Classified',
+                command: 'coverage-highlighter.toggleHideClassified'
+            },
+            {
+                type: 'action',
+                label: 'Manage Reasons',
+                command: 'coverage-highlighter.manageReasons'
+            },
+            {
+                type: 'action',
+                label: 'Generate Report',
+                command: 'coverage-highlighter.generateReport'
+            }
         );
 
         return items;
     }
 
     private getCategoryItems(): TreeItemData[] {
-        const categories: TreeItemData[] = [
-            { type: 'category', label: '문서', category: 'document' },
-            { type: 'category', label: '주석 예정', category: 'comment-planned' },
-            { type: 'category', label: '태울 예정', category: 'cover-planned' }
+        const categories: ClassificationCategory[] = [
+            'document',
+            'comment-planned',
+            'cover-planned'
         ];
 
-        // 각 카테고리의 항목 수 표시
-        return categories.map(cat => {
-            const classifications = this.classificationManager.getClassificationsByCategory(cat.category!);
+        return categories.map(category => {
+            const classifications = this.classificationManager.getClassificationsByCategory(category);
             let count = 0;
             for (const items of classifications.values()) {
                 count += items.length;
             }
+
             return {
-                ...cat,
-                label: `${cat.label} (${count})`
+                type: 'category',
+                category,
+                label: `${getCategoryLabel(category)} (${count})`
             };
         });
     }
 
-    private getReasonItems(category: 'document' | 'comment-planned' | 'cover-planned'): TreeItemData[] {
+    private getReasonItems(category: ClassificationCategory): TreeItemData[] {
         const classifications = this.classificationManager.getClassificationsByCategory(category);
         const items: TreeItemData[] = [];
 
-        for (const [reason, lineItems] of classifications) {
+        for (const [reason, lineItems] of classifications.entries()) {
             items.push({
                 type: 'reason',
-                label: `${reason} (${lineItems.length})`,
+                label: `${reason || 'Unspecified'} (${lineItems.length})`,
                 category,
                 reason
             });
         }
 
-        if (items.length === 0) {
-            return [{ type: 'line', label: '분류된 항목 없음' }];
-        }
-
-        return items;
+        return items.length > 0
+            ? items
+            : [{ type: 'line', label: 'No classified lines' }];
     }
 
-    private getFileItems(category: 'document' | 'comment-planned' | 'cover-planned', reason: string): TreeItemData[] {
+    private getFileItems(category: ClassificationCategory, reason: string): TreeItemData[] {
         const classifications = this.classificationManager.getClassificationsByCategory(category);
         const items = classifications.get(reason) || [];
+        const itemsByFile = new Map<string, ClassifiedLine[]>();
 
-        // filePath로 그룹화 (fileName이 아닌 전체 경로로)
-        const byFile = new Map<string, ClassifiedLine[]>();
         for (const item of items) {
-            const key = item.filePath;  // 전체 경로 사용
-            if (!byFile.has(key)) {
-                byFile.set(key, []);
-            }
-            byFile.get(key)!.push(item);
+            const fileItems = itemsByFile.get(item.filePath) ?? [];
+            fileItems.push(item);
+            itemsByFile.set(item.filePath, fileItems);
         }
 
-        const result: TreeItemData[] = [];
-        for (const [filePath, lines] of byFile) {
-            const fileName = lines[0]?.fileName || path.basename(filePath);
-            result.push({
-                type: 'file',
-                label: `${fileName} (${lines.length})`,
-                category,
-                reason,
-                filePath
-            });
-        }
-
-        return result;
+        return Array.from(itemsByFile.entries()).map(([filePath, fileItems]) => ({
+            type: 'file',
+            label: `${fileItems[0]?.fileName || path.basename(filePath)} (${fileItems.length})`,
+            category,
+            reason,
+            filePath
+        }));
     }
 
-    private getLineItems(category: 'document' | 'comment-planned' | 'cover-planned', reason: string, filePath: string): TreeItemData[] {
+    private getLineItems(
+        category: ClassificationCategory,
+        reason: string,
+        filePath: string
+    ): TreeItemData[] {
         const classifications = this.classificationManager.getClassificationsByCategory(category);
-        const items = classifications.get(reason) || [];
+        const items = (classifications.get(reason) || [])
+            .filter(item => item.filePath === filePath)
+            .sort((a, b) => a.line - b.line);
 
-        const fileItems = items.filter(i => i.filePath === filePath);
-        fileItems.sort((a, b) => a.line - b.line);
-
-        return fileItems.map(item => ({
-            type: 'line' as TreeItemType,
+        return items.map(item => ({
+            type: 'line',
             label: `Line ${item.line}`,
             filePath: item.filePath,
             line: item.line,
@@ -509,47 +507,48 @@ export class CoverageTreeDataProvider implements vscode.TreeDataProvider<TreeIte
 
     private getUnclassifiedFileItems(): TreeItemData[] {
         if (!this.coverageData) {
-            return [{ type: 'action', label: 'XML을 먼저 로드하세요', command: 'coverage-highlighter.loadCoverage' }];
+            return [{
+                type: 'action',
+                label: 'Load XML first',
+                command: 'coverage-highlighter.loadCoverage'
+            }];
         }
 
-        const result: { item: TreeItemData; count: number; fileName: string; filePath: string }[] = [];
+        const result: SortableFileItem[] = [];
 
-        for (const [fileName, fileCoverage] of this.coverageData.files) {
-            // 검색 필터 적용
+        for (const [fileName, fileCoverage] of this.coverageData.files.entries()) {
             if (this.searchQuery && !this.matchesSearch(fileName, fileCoverage.fileName)) {
                 continue;
             }
 
-            const unclassifiedLines = this.getUnclassifiedLinesForFile(fileName, fileCoverage);
-            if (unclassifiedLines.length > 0) {
-                result.push({
-                    item: {
-                        type: 'unclassified-file',
-                        label: `${path.basename(fileName)} (${unclassifiedLines.length})`,
-                        filePath: fileCoverage.fileName
-                    },
-                    count: unclassifiedLines.length,
-                    fileName: path.basename(fileName),
-                    filePath: fileCoverage.fileName
-                });
+            const unclassifiedLines = this.getUnclassifiedLinesForFile(fileCoverage);
+            if (unclassifiedLines.length === 0) {
+                continue;
             }
+
+            result.push({
+                item: {
+                    type: 'unclassified-file',
+                    label: `${path.basename(fileName)} (${unclassifiedLines.length})`,
+                    filePath: fileCoverage.fileName
+                },
+                count: unclassifiedLines.length,
+                fileName: path.basename(fileName),
+                filePath: fileCoverage.fileName
+            });
         }
 
         if (result.length === 0) {
-            if (this.searchQuery) {
-                return [{ type: 'line', label: `"${this.searchQuery}"에 일치하는 파일이 없습니다` }];
-            }
-            return [{ type: 'line', label: '모든 항목이 분류되었습니다' }];
+            return this.searchQuery
+                ? [{ type: 'line', label: `No files match "${this.searchQuery}"` }]
+                : [{ type: 'line', label: 'Everything is classified' }];
         }
 
-        // 정렬 적용
-        this.sortItems(result);
-
-        return result.map(r => r.item);
+        this.sortFileItems(result);
+        return result.map(entry => entry.item);
     }
 
-    // 정렬 함수
-    private sortItems(items: { item: TreeItemData; count: number; fileName: string; filePath: string }[]): void {
+    private sortFileItems(items: SortableFileItem[]): void {
         switch (this.sortOption) {
             case 'name-asc':
                 items.sort((a, b) => a.fileName.localeCompare(b.fileName));
@@ -573,91 +572,85 @@ export class CoverageTreeDataProvider implements vscode.TreeDataProvider<TreeIte
     }
 
     private getUnclassifiedLineItems(filePath: string): TreeItemData[] {
-        if (!this.coverageData) {
+        const coverage = this.findCoverageByFilePath(filePath);
+        if (!coverage) {
             return [];
         }
 
-        // filePath로 coverage 찾기
-        let targetCoverage: FileCoverage | undefined;
-        for (const [fileName, fileCoverage] of this.coverageData.files) {
-            if (fileCoverage.fileName === filePath) {
-                targetCoverage = fileCoverage;
-                break;
-            }
-        }
-
-        if (!targetCoverage) {
-            return [];
-        }
-
-        const unclassifiedLines = this.getUnclassifiedLinesForFile(targetCoverage.fileName, targetCoverage);
-
-        // 연속된 라인을 블록으로 그룹화
-        const blocks = this.groupIntoBlocks(unclassifiedLines);
-
+        const blocks = this.groupIntoBlocks(this.getUnclassifiedLinesForFile(coverage));
         return blocks.map(block => ({
-            type: 'unclassified-line' as TreeItemType,
-            label: block.length === 1 ? `Line ${block[0]}` : `Line ${block[0]}-${block[block.length - 1]}`,
-            filePath: filePath,
+            type: 'unclassified-line',
+            label: this.buildBlockLabel(block),
+            filePath,
             line: block[0],
-            lines: block,  // 블록의 모든 라인
+            lines: block,
             isUnclassified: true
         }));
     }
 
-    // 분류 옵션 반환
-    private getClassifyOptions(filePath: string, line: number, lines?: number[]): TreeItemData[] {
-        const reasons = this.classificationManager.getReasons();
-        const options: TreeItemData[] = [];
-        const targetLines = lines || [line];
+    private findCoverageByFilePath(filePath: string): FileCoverage | undefined {
+        if (!this.coverageData) {
+            return undefined;
+        }
 
-        // 문서 카테고리 - 사유별로 옵션 생성
-        for (const reason of reasons) {
-            options.push({
+        for (const coverage of this.coverageData.files.values()) {
+            if (coverage.fileName === filePath) {
+                return coverage;
+            }
+        }
+
+        return undefined;
+    }
+
+    private getClassifyOptions(filePath: string, line: number, lines?: number[]): TreeItemData[] {
+        const targetLines = lines || [line];
+        const options: TreeItemData[] = this.classificationManager.getReasons().map(reason => ({
+            type: 'classify-option',
+            label: `Document: ${reason.label}`,
+            category: 'document',
+            reason: reason.label,
+            filePath,
+            line,
+            lines: targetLines
+        }));
+
+        options.push(
+            {
                 type: 'classify-option',
-                label: `문서: ${reason.label}`,
+                label: 'Document: Add a new reason...',
                 category: 'document',
-                reason: reason.label,
+                reason: '__new__',
                 filePath,
                 line,
                 lines: targetLines
-            });
-        }
-
-        // 새 사유 추가 옵션
-        options.push({
-            type: 'classify-option',
-            label: '문서: 새 사유 추가...',
-            category: 'document',
-            reason: '__new__',
-            filePath,
-            line,
-            lines: targetLines
-        });
-
-        // 주석 예정
-        options.push({
-            type: 'classify-option',
-            label: '주석 예정',
-            category: 'comment-planned',
-            reason: '',
-            filePath,
-            line,
-            lines: targetLines
-        });
-
-        // 태울 예정
-        options.push({
-            type: 'classify-option',
-            label: '태울 예정',
-            category: 'cover-planned',
-            reason: '',
-            filePath,
-            line,
-            lines: targetLines
-        });
+            },
+            {
+                type: 'classify-option',
+                label: 'Comment Planned',
+                category: 'comment-planned',
+                reason: '',
+                filePath,
+                line,
+                lines: targetLines
+            },
+            {
+                type: 'classify-option',
+                label: 'Cover Planned',
+                category: 'cover-planned',
+                reason: '',
+                filePath,
+                line,
+                lines: targetLines
+            }
+        );
 
         return options;
+    }
+
+    private buildBlockLabel(block: number[]): string {
+        return block.length === 1
+            ? `Line ${block[0]}`
+            : `Line ${block[0]}-${block[block.length - 1]}`;
     }
 
     private groupIntoBlocks(lines: number[]): number[][] {
@@ -668,16 +661,28 @@ export class CoverageTreeDataProvider implements vscode.TreeDataProvider<TreeIte
         const blocks: number[][] = [];
         let currentBlock: number[] = [lines[0]];
 
-        for (let i = 1; i < lines.length; i++) {
-            if (lines[i] === lines[i - 1] + 1) {
-                currentBlock.push(lines[i]);
-            } else {
-                blocks.push(currentBlock);
-                currentBlock = [lines[i]];
+        for (let index = 1; index < lines.length; index++) {
+            if (lines[index] === lines[index - 1] + 1) {
+                currentBlock.push(lines[index]);
+                continue;
             }
-        }
-        blocks.push(currentBlock);
 
+            blocks.push(currentBlock);
+            currentBlock = [lines[index]];
+        }
+
+        blocks.push(currentBlock);
         return blocks;
+    }
+
+    private getCategoryIcon(category: ClassificationCategory): vscode.ThemeIcon {
+        switch (category) {
+            case 'document':
+                return new vscode.ThemeIcon('file-text');
+            case 'comment-planned':
+                return new vscode.ThemeIcon('comment');
+            case 'cover-planned':
+                return new vscode.ThemeIcon('flame');
+        }
     }
 }
