@@ -9,6 +9,7 @@ import {
     promptForReason
 } from './classificationPrompts';
 import {
+    ClassifiedLine,
     ClassificationManager,
     ClassificationTarget
 } from './classificationManager';
@@ -798,8 +799,34 @@ async function showClassifications(): Promise<void> {
     );
 
     panel.webview.html = renderClassificationsHtml(
-        classificationManager.getAllClassifications()
+        getVisibleClassifications()
     );
+}
+
+function getVisibleClassifications(): Map<string, ClassifiedLine[]> {
+    if (!coverageData) {
+        return classificationManager.getAllClassifications();
+    }
+
+    const result = new Map<string, ClassifiedLine[]>();
+
+    for (const [key, items] of classificationManager.getAllClassifications().entries()) {
+        const visibleItems = items.filter(item => {
+            const coverage = findMatchingCoverage(item.filePath, coverageData!.files);
+            if (!coverage) {
+                return true;
+            }
+
+            return coverage.uncoveredLines.has(item.line)
+                || coverage.partialCoveredLines.has(item.line);
+        });
+
+        if (visibleItems.length > 0) {
+            result.set(key, visibleItems);
+        }
+    }
+
+    return result;
 }
 
 function showSummary(): void {

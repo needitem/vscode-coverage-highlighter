@@ -166,27 +166,33 @@ export function renderClassificationsHtml(classifications: Map<string, Classifie
         const [category, reason] = key.split(':');
         const categoryLabel = getCategoryLabel(category as ClassifiedLine['category']);
 
-        const byFile = new Map<string, number[]>();
+        const byFile = new Map<string, { fileName: string; lines: number[] }>();
         for (const item of items) {
-            if (!byFile.has(item.fileName)) {
-                byFile.set(item.fileName, []);
+            if (!byFile.has(item.filePath)) {
+                byFile.set(item.filePath, {
+                    fileName: item.fileName,
+                    lines: []
+                });
             }
-            byFile.get(item.fileName)!.push(item.line);
+            byFile.get(item.filePath)!.lines.push(item.line);
         }
 
         const title = `${categoryLabel}${reason ? ` - ${reason}` : ''}`;
         let rowsHtml = '';
 
         let index = 1;
-        for (const [fileName, lines] of Array.from(byFile.entries()).sort((left, right) =>
+        for (const [filePath, entry] of Array.from(byFile.entries()).sort((left, right) =>
             left[0].localeCompare(right[0])
         )) {
-            lines.sort((a, b) => a - b);
+            entry.lines.sort((a, b) => a - b);
             rowsHtml += `<tr>
                 <td class="numeric">${index}</td>
-                <td>${escapeHtml(fileName)}</td>
-                <td>${escapeHtml(lines.join(', '))}</td>
-                <td class="muted">${lines.length}개 라인</td>
+                <td>
+                    <div>${escapeHtml(entry.fileName)}</div>
+                    <div class="muted">${escapeHtml(path.dirname(filePath))}</div>
+                </td>
+                <td>${escapeHtml(entry.lines.join(', '))}</td>
+                <td class="muted">${entry.lines.length} lines</td>
             </tr>`;
             index++;
         }
@@ -195,7 +201,7 @@ export function renderClassificationsHtml(classifications: Map<string, Classifie
             <h2 class="section-title">${escapeHtml(title)}</h2>
             <table>
                 <thead>
-                    <tr><th>번호</th><th>파일</th><th>라인</th><th>비고</th></tr>
+                    <tr><th>No.</th><th>File</th><th>Lines</th><th>Count</th></tr>
                 </thead>
                 <tbody>
                     ${rowsHtml}

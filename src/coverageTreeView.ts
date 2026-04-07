@@ -2,7 +2,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { ClassificationManager, ClassifiedLine } from './classificationManager';
 import { ClassificationCategory, getCategoryLabel } from './classification';
-import { CoverageData, FileCoverage } from './coverageParser';
+import { CoverageData, FileCoverage, findMatchingCoverage } from './coverageParser';
 import { LineTracker } from './lineTracker';
 
 type TreeItemType =
@@ -218,6 +218,9 @@ export class CoverageTreeDataProvider implements vscode.TreeDataProvider<TreeIte
                     treeItem.tooltip = `${element.filePath}:${element.line}`;
                     if (element.category) {
                         treeItem.contextValue = 'classifiedLine';
+                        treeItem.description = element.reason || getCategoryLabel(element.category);
+                        treeItem.tooltip = `${element.filePath}:${element.line}\n${getCategoryLabel(element.category)}`
+                            + (element.reason ? ` - ${element.reason}` : '');
                     }
                     if (element.isUnclassified) {
                         treeItem.contextValue = 'unclassifiedLine';
@@ -392,10 +395,51 @@ export class CoverageTreeDataProvider implements vscode.TreeDataProvider<TreeIte
 
     private getClassificationCount(): number {
         let count = 0;
-        for (const items of this.classificationManager.getAllClassifications().values()) {
+        for (const items of this.getVisibleClassifications().values()) {
             count += items.length;
         }
         return count;
+    }
+
+    private getVisibleClassifications(): Map<string, ClassifiedLine[]> {
+        const result = new Map<string, ClassifiedLine[]>();
+
+        for (const [key, items] of this.classificationManager.getAllClassifications().entries()) {
+            const visibleItems = items.filter(item => this.isClassificationVisible(item));
+            if (visibleItems.length > 0) {
+                result.set(key, visibleItems);
+            }
+        }
+
+        return result;
+    }
+
+    private getVisibleClassificationsByCategory(
+        category: ClassificationCategory
+    ): Map<string, ClassifiedLine[]> {
+        const result = new Map<string, ClassifiedLine[]>();
+
+        for (const [key, items] of this.getVisibleClassifications().entries()) {
+            if (key.startsWith(`${category}:`)) {
+                result.set(key.substring(category.length + 1), items);
+            }
+        }
+
+        return result;
+    }
+
+    private isClassificationVisible(item: ClassifiedLine): boolean {
+        if (!this.coverageData) {
+            return true;
+        }
+
+        const coverage = findMatchingCoverage(item.filePath, this.coverageData.files);
+        if (!coverage) {
+            return true;
+        }
+
+        return coverage.uncoveredLines.has(item.line)
+            || coverage.partialCoveredLines.has(item.line);
     }
 
     private matchesSearch(fileName: string, filePath: string): boolean {
@@ -474,23 +518,32 @@ export class CoverageTreeDataProvider implements vscode.TreeDataProvider<TreeIte
             'cover-planned'
         ];
 
-        return categories.map(category => {
-            const classifications = this.classificationManager.getClassificationsByCategory(category);
+        const items: TreeItemData[] = [];
+        for (const category of categories) {
+            const classifications = this.getVisibleClassificationsByCategory(category);
             let count = 0;
-            for (const items of classifications.values()) {
-                count += items.length;
+            for (const categoryItems of classifications.values()) {
+                count += categoryItems.length;
             }
 
-            return {
+            if (count === 0) {
+                continue;
+            }
+
+            items.push({
                 type: 'category',
                 category,
                 label: `${getCategoryLabel(category)} (${count})`
-            };
-        });
+            });
+        }
+
+        return items.length > 0
+            ? items
+            : [{ type: 'line', label: 'No classified items found.' }];
     }
 
     private getReasonItems(category: ClassificationCategory): TreeItemData[] {
-        const classifications = this.classificationManager.getClassificationsByCategory(category);
+        const classifications = this.getVisibleClassificationsByCategory(category);
         const items = Array.from(classifications.entries())
             .sort((left, right) =>
                 left[0].localeCompare(right[0], 'ko')
@@ -509,7 +562,7 @@ export class CoverageTreeDataProvider implements vscode.TreeDataProvider<TreeIte
     }
 
     private getFileItems(category: ClassificationCategory, reason: string): TreeItemData[] {
-        const classifications = this.classificationManager.getClassificationsByCategory(category);
+        const classifications = this.getVisibleClassificationsByCategory(category);
         const items = classifications.get(reason) || [];
         const itemsByFile = new Map<string, ClassifiedLine[]>();
 
@@ -538,7 +591,7 @@ export class CoverageTreeDataProvider implements vscode.TreeDataProvider<TreeIte
         reason: string,
         filePath: string
     ): TreeItemData[] {
-        const classifications = this.classificationManager.getClassificationsByCategory(category);
+        const classifications = this.getVisibleClassificationsByCategory(category);
         const items = (classifications.get(reason) || [])
             .filter(item => item.filePath === filePath)
             .sort((a, b) => a.line - b.line);
@@ -548,7 +601,8 @@ export class CoverageTreeDataProvider implements vscode.TreeDataProvider<TreeIte
             label: `${item.line}라인`,
             filePath: item.filePath,
             line: item.line,
-            category
+            category,
+            reason: item.reason
         }));
     }
 

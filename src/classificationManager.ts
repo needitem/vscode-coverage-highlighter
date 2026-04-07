@@ -1,6 +1,11 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { ClassificationCategory } from './classification';
+import {
+    ClassificationCacheData,
+    loadClassificationCache,
+    saveClassificationCache
+} from './classificationCache';
 import { getPathSuffix, pathsMatch } from './pathUtils';
 
 export interface ClassifiedLine {
@@ -38,6 +43,7 @@ export class ClassificationManager {
         this.context = context;
         this.loadReasons();
         this.loadClassifications();
+        this.mergeCacheFile();
         this.normalizeClassifications();
     }
 
@@ -216,11 +222,47 @@ export class ClassificationManager {
         }
     }
 
+    private mergeCacheFile(): void {
+        const cache = loadClassificationCache();
+        if (!cache) {
+            return;
+        }
+
+        for (const reason of cache.reasons) {
+            const normalizedLabel = reason.label.trim();
+            if (!normalizedLabel) {
+                continue;
+            }
+
+            if (!this.reasons.some(existing => existing.label === normalizedLabel)) {
+                this.reasons.push({
+                    id: reason.id || `cache-${normalizedLabel}`,
+                    label: normalizedLabel
+                });
+            }
+        }
+
+        for (const item of cache.classifications) {
+            if (!item.filePath || !item.fileName || !item.category) {
+                continue;
+            }
+
+            const key = this.getKey(item.category, item.reason.trim());
+            const list = this.classifications.get(key) ?? [];
+            list.push({
+                ...item,
+                reason: item.reason.trim()
+            });
+            this.classifications.set(key, list);
+        }
+    }
+
     private async saveReasons(): Promise<void> {
         await this.context.workspaceState.update(
             ClassificationManager.REASONS_KEY,
             this.reasons
         );
+        await this.saveCacheFile();
     }
 
     private async saveClassifications(): Promise<void> {
@@ -228,6 +270,20 @@ export class ClassificationManager {
             ClassificationManager.CLASSIFICATIONS_KEY,
             Array.from(this.classifications.entries())
         );
+        await this.saveCacheFile();
+    }
+
+    private async saveCacheFile(): Promise<void> {
+        const cache: ClassificationCacheData = {
+            version: 1,
+            updatedAt: new Date().toISOString(),
+            reasons: [...this.reasons].sort((left, right) =>
+                left.label.localeCompare(right.label, 'ko')
+            ),
+            classifications: this.getFlatClassifications()
+        };
+
+        await saveClassificationCache(cache);
     }
 
     private normalizeClassifications(): void {
@@ -269,6 +325,23 @@ export class ClassificationManager {
                 );
             }
         }
+    }
+
+    private getFlatClassifications(): ClassifiedLine[] {
+        const items: ClassifiedLine[] = [];
+
+        for (const list of this.classifications.values()) {
+            for (const item of list) {
+                items.push({ ...item });
+            }
+        }
+
+        return items.sort((left, right) => {
+            const pathComparison = left.filePath.localeCompare(right.filePath, 'ko');
+            return pathComparison !== 0
+                ? pathComparison
+                : left.line - right.line;
+        });
     }
 
     private getKey(category: ClassificationCategory, reason: string): string {
